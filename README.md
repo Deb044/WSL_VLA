@@ -1,42 +1,49 @@
-# VLA Model Zoo Construction Pipeline (Octo-Small & Modular VLA)
+# VLA Model Zoo & Weight Space Alignment Pipeline
 
 **Project**: Weight Space Alignment for Continual Learning in Robotics  
 **Default Model**: **Octo-Small (27M parameters)** with Component-Factorized LoRA  
-**Target Output**: Modality-Factorized LoRA Population ($\Delta W^{(k)} \in \mathbb{R}^{L \times 3 \times r \times H}$) with Multi-Modal Task Evidence ($\mathcal{M}^{(k)} = \{e_{\text{vis}}^{(k)}, e_{\text{lang}}^{(k)}, e_{\text{act}}^{(k)}\}$)
+**Target Output**: Modality-Factorized LoRA Population ($\Delta W^{(k)} \in \mathbb{R}^{L \times 3 \times r \times H}$) with Multi-Modal Task Evidence ($\mathcal{M}^{(k)} = \{e_{\text{vis}}^{(k)}, e_{\text{lang}}^{(k)}, e_{\text{act}}^{(k)}\}$) and Continual Weight Space Alignment ($g_\phi, h_\psi$).
 
 ---
 
-## Clean Directory Organization
+## Directory Organization
 
 ```text
 WSL_VLA/
 ├── configs/
-│   ├── vla_config.yaml         # Active model config (Octo-Small default), LoRA rank, training params
-│   └── tasks_config.yaml       # 40-task registry across the 4 LIBERO benchmark suites
+│   ├── vla_config.yaml               # Active model config (Octo-Small default), LoRA rank, training params
+│   └── tasks_config.yaml             # 40-task registry across the 4 LIBERO benchmark suites
 ├── data/
-│   ├── dataset.py              # PyTorch Dataset supporting auto-discovery of real HDF5 and synthetic fallback
-│   ├── download_libero.py      # Targeted downloader (downloads single suites or task subsets)
-│   └── download_libero.sh      # Shell script to fetch all LIBERO suites (cluster use)
+│   ├── dataset.py                    # PyTorch Dataset with auto-discovery of real HDF5 and synthetic fallback
+│   ├── download_libero.py            # Targeted downloader for LIBERO benchmark suites
+│   └── download_libero_subset.py     # On-demand downloader for specific tasks/subsets from Hugging Face
 ├── docs/
-│   ├── compute.md              # Mathematical derivations for GPU, VRAM, and storage sizing
-│   └── MODEL_ZOO_PREFLIGHT_PLAN.md # Strategic Zero-Fail pre-flight guide and checklist
+│   ├── METHODOLOGY_1_GUIDE.md        # Complete mathematical formulation and guide for Methodology 1
+│   ├── MODEL_ZOO_PREFLIGHT_PLAN.md   # Strategic pre-flight plan and verification checklist
+│   └── compute.md                    # GPU, VRAM, and storage sizing derivations
 ├── models/
-│   ├── base_vla.py             # Abstract BaseVLA interface & build_vla_model factory
-│   ├── octo_small.py           # Octo-Small (27M) with factorized LoRA & [8, 3, 16, 384] extraction
-│   ├── small_vla.py            # Lightweight 1.2M model for instant dry-runs
-│   ├── download_octo_weights.py# Downloader for official UC Berkeley Octo-Small checkpoint
-│   └── evidence_extractor.py   # DeepSets (e_vis), Sentence-Transformer (e_lang), Action stats (e_act)
+│   ├── base_vla.py                   # Abstract BaseVLA interface & build_vla_model factory
+│   ├── octo_small.py                 # Octo-Small (27M) with factorized LoRA & [8, 3, 16, 384] extraction
+│   ├── small_vla.py                  # Lightweight 1.2M model for rapid CPU dry-runs
+│   ├── evidence_extractor.py         # DeepSets (e_vis), Sentence-Transformer (e_lang), Action stats (e_act)
+│   ├── weight_autoencoder.py         # Component-Factorized Weight Autoencoder (g_phi, h_psi) [Methodology 1.1]
+│   ├── contrastive_alignment.py      # Modality-Specific InfoNCE Contrastive Alignment [Methodology 1.2]
+│   └── differential_regularizer.py   # Asymmetric Differential Regularizer & Pi_shell [Methodology 1.3]
 ├── scripts/
-│   ├── train_zoo.py            # Resilient multi-task training loop with atomic saving and TF32 acceleration
-│   └── verify_zoo.py           # Integrity validator & population tensor aggregator
+│   ├── train_zoo.py                  # Multi-task training loop with atomic saving and crash recovery
+│   ├── verify_zoo.py                 # Population integrity validator & [N, 8, 3, 16, 384] tensor aggregator
+│   ├── evaluate_vla.py               # Comprehensive evaluation suite (MSE, RMSE, Cosine Sim, Gripper Acc)
+│   ├── train_alignment.py            # Weight-Space Contrastive Alignment training loop [Methodology 1.2]
+│   └── sequential_adaptation.py      # Continual learning stream adaptation with gamma_vis > gamma_act [Methodology 1.3]
 ├── tests/
-│   └── test_local_dryrun.py    # Local pre-flight dry-run suite testing Octo-Small, factory & LoRA
-├── setup_env.sh                # Automated Linux/WSL environment installer (Conda, PyTorch CUDA, EGL)
-├── setup_mac.sh                # Automated macOS installer (Apple Silicon MPS, CGL)
-├── requirements.txt            # Pinned Python dependencies
-├── environment.yml             # Conda environment definition
-├── .gitignore                  # Excludes heavy datasets (data/libero), checkpoints, and cache
-└── README.md                   # Project overview & quickstart guide
+│   ├── test_local_dryrun.py          # Pre-flight unit tests (Octo-Small, factory, LoRA, evidence)
+│   └── test_methodology1.py          # Methodology 1 unit tests (Autoencoder, Alignment loss, Pi_shell, Reg)
+├── setup_windows.ps1                 # Automated Windows PowerShell environment installer
+├── setup_env.sh                      # Automated Linux/WSL installer (CUDA, EGL)
+├── setup_mac.sh                      # Automated macOS installer (MPS, CGL)
+├── requirements.txt                  # Pinned dependencies
+├── environment.yml                   # Conda environment definition
+└── .gitignore                        # Excludes large binaries (HDF5 datasets, checkpoints, caches)
 ```
 
 ---
@@ -44,6 +51,12 @@ WSL_VLA/
 ## Quickstart Guide
 
 ### 1. Environment Setup
+
+* **On Native Windows (PowerShell)**:
+  ```powershell
+  .\setup_windows.ps1
+  conda activate vla_zoo
+  ```
 
 * **On Linux / WSL (Ubuntu)**:
   ```bash
@@ -59,48 +72,70 @@ WSL_VLA/
 
 ---
 
-### 2. Run Local Pre-Flight Dry-Run
-Run the self-contained unit test suite (~10 seconds, CPU):
-```bash
-python tests/test_local_dryrun.py
-```
+### 2. Run Test Suites
+
+* **Local Pre-Flight Dry-Run Suite (All 5 tests)**:
+  ```bash
+  python tests/test_local_dryrun.py
+  ```
+
+* **Methodology 1 Unit Tests (All 4 tests)**:
+  ```bash
+  python tests/test_methodology1.py
+  ```
 
 ---
 
-### 3. Stage Datasets (Disk Saver Option)
-To save storage, download only a single suite or subset:
+### 3. Stage Datasets
 
-* **Download 2 tasks of `libero_spatial` (~600 MB)**:
+To download real LIBERO demonstration suites from Hugging Face:
+
+* **Download 4 tasks from `libero_spatial` (~2.3 GB)**:
   ```bash
-  python data/download_libero.py --suite libero_spatial --max_tasks 2
+  python scripts/download_libero_subset.py --suite libero_spatial --max_tasks 4
   ```
 
-* **Download all 10 tasks of `libero_spatial` (~3.2 GB)**:
+* **Download tasks from `libero_object`**:
   ```bash
-  python data/download_libero.py --suite libero_spatial
+  python scripts/download_libero_subset.py --suite libero_object --max_tasks 2
   ```
 
 ---
 
 ### 4. Train the Model Zoo
 
-* **Train first 2 tasks**:
+* **Train all available tasks with 500 optimizer steps**:
   ```bash
-  python scripts/train_zoo.py --limit_tasks 2 --max_steps 500
+  python scripts/train_zoo.py --max_steps 500
   ```
 
-* **Train full 40-task zoo**:
+* **Verify Population Checkpoints**:
   ```bash
-  python scripts/train_zoo.py
+  python scripts/verify_zoo.py --dir ./checkpoints/model_zoo
+  ```
+
+* **Evaluate Trajectory Tracking Accuracy**:
+  ```bash
+  python scripts/evaluate_vla.py
   ```
 
 ---
 
-### 5. Verify Checkpoints
-Verify that all checkpoints extract valid tensors:
+### 5. Methodology 1: Weight Space Alignment & Continual Learning
+
+#### 5.1 Train Weight Space Contrastive Alignment
+Compresses and aligns the population weights $\Delta W \in \mathbb{R}^{L \times 3 \times r \times H}$ with multi-modal task prompts $(e_{\text{vis}}, e_{\text{lang}}, e_{\text{act}})$ using modality-specific InfoNCE losses:
 ```bash
-python scripts/verify_zoo.py --dir ./checkpoints/model_zoo --expected 2
+python scripts/train_alignment.py --checkpoint_dir ./checkpoints/model_zoo --epochs 100
 ```
-Expected output:
-$$\text{Population Tensor Shape: } [N, 8, 3, 16, 384]$$
-$$\text{Evidence: } e_{\text{vis}} [128], \quad e_{\text{lang}} [384], \quad e_{\text{act}} [28]$$
+
+#### 5.2 Sequential Adaptation (Continual Learning Stream)
+Performs continual learning with **Differential Regularization** ($\gamma_{\text{vis}}, \gamma_{\text{lang}} > \gamma_{\text{act}}$), mitigating catastrophic forgetting of vision/language components:
+```bash
+python scripts/sequential_adaptation.py --schedule fixed --gamma_vis 1.0 --gamma_lang 1.0 --gamma_act 0.2
+```
+
+Supported schedules:
+- `--schedule fixed`: Fixed ratio regularization.
+- `--schedule drift_informed`: Regularization scaled by historical drift sensitivity.
+- `--schedule adaptive`: Online live drift tracking in latent space.

@@ -36,6 +36,10 @@ class LiberoTaskDataset(Dataset):
         self.lang_embed_dim = lang_embed_dim
         self.action_dim = action_dim
 
+        # Initialize consistent task instruction vector
+        g = torch.Generator().manual_seed(abs(hash(self.task_id)) % (2**31))
+        self.lang_vector = torch.randn(self.lang_embed_dim, generator=g)
+
         # Auto-discover HDF5 file in data_dir if data_path is not explicitly provided
         resolved_path = data_path
         if resolved_path is None and data_dir and os.path.exists(data_dir):

@@ -19,15 +19,15 @@ model:
 lora:
   r: 16                       # LoRA rank (16 or 32)
   lora_alpha: 32              # LoRA scaling factor
-  lora_dropout: 0.0           # Dropout during adapter fine-tuning
+  lora_dropout: 0.05          # Dropout during adapter fine-tuning (5% regularizer)
   bias: "none"
 
 training:
   batch_size: 16              # Fits comfortably in RTX 4050 6GB VRAM
   gradient_accumulation_steps: 1
-  learning_rate: 1.0e-3
-  weight_decay: 1.0e-4
-  steps_per_task: 500         # Optimizer steps per task (e.g. 500 for testing, 10000 for full)
+  learning_rate: 5.0e-4       # Smooth convergence rate for 2000 steps
+  weight_decay: 1.0e-2        # L2 regularizer keeping delta_w well-conditioned
+  steps_per_task: 2000        # Optimal convergence for 50 demonstrations
   eval_interval: 100
   precision: "fp32"           # "fp32" (accelerated via TF32) or "fp16" / "bf16"
   seed: 42

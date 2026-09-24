@@ -39,7 +39,9 @@ class BaseVLA(nn.Module, ABC):
         pass
 
     @abstractmethod
-    def attach_factorized_lora(self, rank: int = 16, alpha: int = 32) -> nn.Module:
+    def attach_factorized_lora(
+        self, rank: int = 16, alpha: int = 32, dropout: float = 0.0
+    ) -> nn.Module:
         """
         Injects LoRA adapters into vision, language, and action sub-modules,
         freezing the backbone. Must store the resulting model in self._peft_model.

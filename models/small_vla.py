@@ -79,7 +79,9 @@ class SmallVLA(BaseVLA):
         pred_action = self.action_head(x)
         return pred_action
 
-    def attach_factorized_lora(self, rank: int = 16, alpha: int = 32) -> nn.Module:
+    def attach_factorized_lora(
+        self, rank: int = 16, alpha: int = 32, dropout: float = 0.0
+    ) -> nn.Module:
         self._lora_rank = rank
         target_modules = []
         for i in range(self.num_layers):
@@ -93,7 +95,7 @@ class SmallVLA(BaseVLA):
             r=rank,
             lora_alpha=alpha,
             target_modules=target_modules,
-            lora_dropout=0.0,
+            lora_dropout=dropout,
             bias="none",
         )
 

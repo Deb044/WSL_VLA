@@ -108,6 +108,7 @@ def train_single_task(
     peft_model = vla_model.attach_factorized_lora(
         rank=vla_cfg["lora"]["r"],
         alpha=vla_cfg["lora"]["lora_alpha"],
+        dropout=float(vla_cfg["lora"].get("lora_dropout", 0.0)),
     )
 
     trainable_params = [p for p in peft_model.parameters() if p.requires_grad]
@@ -185,6 +186,7 @@ def main():
     parser = argparse.ArgumentParser(description="Resilient Model Zoo Multi-Task Training")
     parser.add_argument("--vla_config", type=str, default="configs/vla_config.yaml")
     parser.add_argument("--tasks_config", type=str, default="configs/tasks_config.yaml")
+    parser.add_argument("--suite", type=str, default=None, help="Train only tasks belonging to a specific suite (e.g. libero_spatial)")
     parser.add_argument("--model", type=str, default=None, help="Override model name (e.g. octo_small, small_vla)")
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--limit_tasks", type=int, default=None, help="Train only first N tasks (for debug)")
@@ -221,6 +223,8 @@ def main():
     # Flatten task registry
     all_tasks = []
     for suite_name, suite_data in tasks_cfg["suites"].items():
+        if args.suite and suite_name != args.suite:
+            continue
         for t in suite_data["tasks"]:
             all_tasks.append(t)
 

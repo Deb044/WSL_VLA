@@ -125,7 +125,9 @@ class OctoSmallVLA(BaseVLA):
         pred_action = self.action_head(x)
         return pred_action
 
-    def attach_factorized_lora(self, rank: int = 16, alpha: int = 32) -> nn.Module:
+    def attach_factorized_lora(
+        self, rank: int = 16, alpha: int = 32, dropout: float = 0.0
+    ) -> nn.Module:
         """
         Injects LoRA into all 8 layers for the 3 modality sub-modules:
           - layers.{i}.vis_block
@@ -146,7 +148,7 @@ class OctoSmallVLA(BaseVLA):
             r=rank,
             lora_alpha=alpha,
             target_modules=target_modules,
-            lora_dropout=0.0,
+            lora_dropout=dropout,
             bias="none",
         )
 

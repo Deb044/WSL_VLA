@@ -33,7 +33,7 @@ def verify_zoo(checkpoint_dir: str, expected_tasks: int = 40):
     for fname in ckpt_files:
         fpath = os.path.join(checkpoint_dir, fname)
         try:
-            data = torch.load(fpath, map_location="cpu")
+            data = torch.load(fpath, map_location="cpu", weights_only=False)
             required_keys = ["task_id", "task_name", "delta_w", "e_vis", "e_lang", "e_act"]
             for k in required_keys:
                 assert k in data, f"Missing key '{k}' in {fname}"

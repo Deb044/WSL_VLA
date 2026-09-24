@@ -23,6 +23,7 @@ class LiberoTaskDataset(Dataset):
         self,
         task_id: str,
         task_instruction: str,
+        data_dir: Optional[str] = "./data/libero",
         data_path: Optional[str] = None,
         num_synthetic_samples: int = 500,
         img_feat_dim: int = 64,
@@ -35,29 +36,67 @@ class LiberoTaskDataset(Dataset):
         self.lang_embed_dim = lang_embed_dim
         self.action_dim = action_dim
 
-        if data_path and os.path.exists(data_path):
-            self._load_hdf5(data_path)
+        # Auto-discover HDF5 file in data_dir if data_path is not explicitly provided
+        resolved_path = data_path
+        if resolved_path is None and data_dir and os.path.exists(data_dir):
+            resolved_path = self._find_matching_hdf5(data_dir)
+
+        if resolved_path and os.path.exists(resolved_path):
+            self._load_hdf5(resolved_path)
         else:
             self._generate_synthetic_demos(num_synthetic_samples)
 
+    def _find_matching_hdf5(self, data_dir: str) -> Optional[str]:
+        """Searches data_dir for an HDF5 file matching task_instruction or task_id."""
+        clean_name = self.task_instruction.lower().strip()
+        for root, _, files in os.walk(data_dir):
+            for f in files:
+                if not f.endswith(".hdf5"):
+                    continue
+                f_lower = f.lower()
+                # Check for direct match with task name or task id
+                if clean_name in f_lower or self.task_id.lower() in f_lower:
+                    return os.path.join(root, f)
+                # Check for token overlap (e.g. key words in prompt)
+                name_tokens = [w for w in clean_name.split("_") if len(w) > 3]
+                if name_tokens and sum(1 for t in name_tokens if t in f_lower) >= min(3, len(name_tokens)):
+                    return os.path.join(root, f)
+        return None
+
     def _load_hdf5(self, hdf5_path: str):
-        """Loads demonstration episodes from a real LIBERO HDF5 dataset."""
+        """Loads demonstration episodes and real camera images from an HDF5 dataset."""
         import h5py
         self.samples = []
+        g = torch.Generator().manual_seed(abs(hash(self.task_id)) % (2**31))
+        self.lang_vector = torch.randn(self.lang_embed_dim, generator=g)
+
+        print(f"  [Dataset] Loading real demonstrations from: {os.path.basename(hdf5_path)}")
         with h5py.File(hdf5_path, "r") as f:
             data_grp = f["data"]
-            for demo_key in data_grp.keys():
+            demo_keys = list(data_grp.keys())
+            for demo_key in demo_keys:
                 demo = data_grp[demo_key]
                 actions = demo["actions"][:]
-                # For demonstration, extract agentview image features or states
-                # In full pipeline, images are processed via SigLIP/ResNet
+                has_obs = "obs" in demo
+                has_agentview = has_obs and "agentview_rgb" in demo["obs"]
+
                 num_steps = len(actions)
                 for t in range(num_steps - 1):
-                    # Mock projection of image observation
-                    vis_feat = torch.randn(self.img_feat_dim)
+                    if has_agentview:
+                        # Extract real camera frame [128, 128, 3] -> spatial average pool to img_feat_dim (64 floats)
+                        raw_frame = demo["obs"]["agentview_rgb"][t]
+                        t_frame = torch.from_numpy(raw_frame).float() / 255.0  # Normalize [0, 1]
+                        # Adaptive avg pool down to 8x8 = 64 feature vector
+                        vis_feat = torch.nn.functional.adaptive_avg_pool2d(
+                            t_frame.permute(2, 0, 1).unsqueeze(0), (8, 8)
+                        ).flatten()[: self.img_feat_dim]
+                    else:
+                        vis_feat = torch.randn(self.img_feat_dim, generator=g)
+
                     act_hist = torch.tensor(actions[t], dtype=torch.float32)
                     target = torch.tensor(actions[t + 1], dtype=torch.float32)
                     self.samples.append((vis_feat, act_hist, target))
+            print(f"  [Dataset] Successfully loaded {len(self.samples)} transitions from {len(demo_keys)} demonstrations.")
 
     def _generate_synthetic_demos(self, num_samples: int):
         """Generates deterministic synthetic demonstration data for on-device dry-runs."""

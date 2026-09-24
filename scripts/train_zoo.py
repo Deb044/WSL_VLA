@@ -46,7 +46,7 @@ def is_checkpoint_valid(filepath: str) -> bool:
     if os.path.getsize(filepath) < 512:
         return False
     try:
-        data = torch.load(filepath, map_location="cpu")
+        data = torch.load(filepath, map_location="cpu", weights_only=False)
         required_keys = {"task_id", "task_name", "delta_w", "e_vis", "e_lang", "e_act"}
         return required_keys.issubset(data.keys())
     except Exception:
@@ -70,13 +70,14 @@ def train_single_task(
     output_dir: str,
     device: torch.device,
     max_steps: int = 500,
+    force: bool = False,
 ):
     task_id = task_info["id"]
     task_name = task_info["name"]
     ckpt_path = os.path.join(output_dir, f"task_{task_id}.pt")
 
-    # 1. Idempotency Check: Skip completed tasks
-    if is_checkpoint_valid(ckpt_path):
+    # 1. Idempotency Check: Skip completed tasks unless forced
+    if not force and is_checkpoint_valid(ckpt_path):
         logging.info(f"[SKIP] Task {task_id} is already completed. Skipping.")
         return
 
@@ -87,6 +88,7 @@ def train_single_task(
     dataset = LiberoTaskDataset(
         task_id=task_id,
         task_instruction=task_name,
+        data_dir=vla_cfg["paths"].get("data_dir", "./data/libero"),
         num_synthetic_samples=400,
         img_feat_dim=vla_cfg["model"]["image_features_dim"],
         lang_embed_dim=vla_cfg["model"]["language_embed_dim"],
@@ -186,6 +188,7 @@ def main():
     parser.add_argument("--model", type=str, default=None, help="Override model name (e.g. octo_small, small_vla)")
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--limit_tasks", type=int, default=None, help="Train only first N tasks (for debug)")
+    parser.add_argument("--force", action="store_true", help="Force re-training even if checkpoints already exist")
     args = parser.parse_args()
 
     with open(args.vla_config, "r") as f:
@@ -243,6 +246,7 @@ def main():
                 output_dir=output_dir,
                 device=device,
                 max_steps=steps_per_task,
+                force=args.force,
             )
         except Exception as e:
             logging.error(f"[ERROR] Task {task_info['id']} failed with exception: {e}")

@@ -130,7 +130,7 @@ def test_atomic_checkpoint_roundtrip():
         assert not os.path.exists(ckpt_file + ".tmp"), "Temporary file was not cleaned up!"
         assert is_checkpoint_valid(ckpt_file), "Checkpoint validation failed!"
 
-        loaded = torch.load(ckpt_file, map_location="cpu")
+        loaded = torch.load(ckpt_file, map_location="cpu", weights_only=False)
         assert loaded["delta_w"].shape == (8, 3, 16, 384)
         print("  -> Success: Atomic write, rename, and load verified cleanly for Octo-Small.")
 

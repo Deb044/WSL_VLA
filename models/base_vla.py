@@ -5,7 +5,7 @@ Defines the unified abstract interface for all Vision-Language-Action models
 and the model registry/factory for easily swapping backbones (SmallVLA, Octo-Small, OpenVLA, etc.).
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple, Type
+from typing import Dict, Tuple, Type, Optional
 import torch
 import torch.nn as nn
 
@@ -20,7 +20,9 @@ class BaseVLA(nn.Module, ABC):
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
         self.action_dim = action_dim
-        self._peft_model: nn.Module = None
+        # Use object.__setattr__ so PyTorch does NOT register _peft_model into self._modules
+        # (which prevents circular submodule reference when PeftModel wraps self)
+        object.__setattr__(self, "_peft_model", None)
         self._lora_rank: int = 16
 
     @abstractmethod
@@ -45,7 +47,7 @@ class BaseVLA(nn.Module, ABC):
         pass
 
     @abstractmethod
-    def extract_delta_w(self) -> torch.Tensor:
+    def extract_delta_w(self, peft_model: Optional[nn.Module] = None) -> torch.Tensor:
         """
         Extracts the trained LoRA matrices and formats them into the
         modality-tensorized representation:

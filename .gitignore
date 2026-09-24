@@ -1,0 +1,81 @@
+# ==============================================================================
+# Git Ignore Configuration for VLA Model Zoo Project
+# ==============================================================================
+
+# --- Datasets & Raw HDF5 Files (Heavy Storage) ---
+data/libero/
+data/*.hdf5
+data/*.h5
+*.hdf5
+*.h5
+
+# --- Model Checkpoints & Pretrained Weights ---
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.tmp
+
+# --- Python Bytecode & Cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- Virtual Environments & Conda ---
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Experiment Tracking & Logs ---
+wandb/
+logs/
+*.log
+training_*.log
+
+# --- IDE & Editor Artifacts ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# --- Operating System Files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# --- Testing & Type Checking ---
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/

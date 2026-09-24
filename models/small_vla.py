@@ -4,6 +4,7 @@ models/small_vla.py
 Defines the SmallVLA architecture conforming to the unified BaseVLA interface.
 Registered as "small_vla" in the model registry.
 """
+from typing import Optional
 import torch
 import torch.nn as nn
 from peft import LoraConfig, get_peft_model
@@ -96,25 +97,28 @@ class SmallVLA(BaseVLA):
             bias="none",
         )
 
-        self._peft_model = get_peft_model(self, lora_config)
-        return self._peft_model
+        peft_model = get_peft_model(self, lora_config)
+        # Use object.__setattr__ to avoid PyTorch circular submodule registration
+        object.__setattr__(self, "_peft_model", peft_model)
+        return peft_model
 
-    def extract_delta_w(self) -> torch.Tensor:
-        if self._peft_model is None:
+    def extract_delta_w(self, peft_model: Optional[nn.Module] = None) -> torch.Tensor:
+        target_peft = peft_model if peft_model is not None else getattr(self, "_peft_model", None)
+        if target_peft is None:
             raise RuntimeError("LoRA has not been attached! Call attach_factorized_lora() first.")
 
         delta_w = torch.zeros(self.num_layers, 3, self._lora_rank, self.hidden_dim, dtype=torch.float32)
-        state = self._peft_model.state_dict()
+        params = dict(target_peft.named_parameters())
         modality_keys = ["vis_mlp", "lang_attn", "act_dense"]
 
         for l in range(self.num_layers):
             for m_idx, mod_name in enumerate(modality_keys):
                 key_A = f"base_model.model.layers.{l}.{mod_name}.lora_A.default.weight"
-                if key_A in state:
-                    A_weight = state[key_A].detach().cpu().to(torch.float32)
+                if key_A in params:
+                    A_weight = params[key_A].detach().cpu().to(torch.float32)
                     delta_w[l, m_idx] = A_weight
                 else:
-                    raise KeyError(f"Expected key '{key_A}' not found in PEFT state dict!")
+                    raise KeyError(f"Expected key '{key_A}' not found in PEFT parameters!")
 
         return delta_w
 

@@ -5,7 +5,7 @@ suites:
       - id: "libero_spatial_0"
         name: "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate"
       - id: "libero_spatial_1"
-        name: "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate"
+        name: "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate"
       - id: "libero_spatial_2"
         name: "pick_up_the_black_bowl_on_the_cookie_box_and_place_it_on_the_plate"
       - id: "libero_spatial_3"

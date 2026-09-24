@@ -85,10 +85,20 @@ def train_single_task(
     logging.info(f"===> Starting training on Task [{task_id}]: {task_name}")
 
     # 2. Build Dataset & Dataloader
+    data_dir = vla_cfg.get("paths", {}).get("data_dir", "./data/libero")
+    task_hdf5 = os.path.join(data_dir, f"{task_id}.hdf5")
+    data_path = task_hdf5 if os.path.exists(task_hdf5) else None
+
+    if data_path:
+        logging.info(f"  -> Using real LIBERO demonstration data: {data_path}")
+    else:
+        logging.info(f"  -> No HDF5 found at {task_hdf5}. Using synthetic demonstration generator.")
+
     dataset = LiberoTaskDataset(
         task_id=task_id,
         task_instruction=task_name,
-        data_dir=vla_cfg["paths"].get("data_dir", "./data/libero"),
+        data_path=data_path,
+        data_dir=data_dir,
         num_synthetic_samples=400,
         img_feat_dim=vla_cfg["model"]["image_features_dim"],
         lang_embed_dim=vla_cfg["model"]["language_embed_dim"],
@@ -177,7 +187,7 @@ def train_single_task(
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    elif hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         torch.mps.empty_cache()
 
 

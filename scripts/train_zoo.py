@@ -89,11 +89,6 @@ def train_single_task(
     task_hdf5 = os.path.join(data_dir, f"{task_id}.hdf5")
     data_path = task_hdf5 if os.path.exists(task_hdf5) else None
 
-    if data_path:
-        logging.info(f"  -> Using real LIBERO demonstration data: {data_path}")
-    else:
-        logging.info(f"  -> No HDF5 found at {task_hdf5}. Using synthetic demonstration generator.")
-
     dataset = LiberoTaskDataset(
         task_id=task_id,
         task_instruction=task_name,

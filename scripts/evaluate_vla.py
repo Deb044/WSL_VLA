@@ -58,14 +58,7 @@ def evaluate_task(
     if "model_state_dict" in checkpoint:
         peft_model.load_state_dict(checkpoint["model_state_dict"], strict=False)
     elif delta_w is not None:
-        # Reconstruct LoRA A weights from extracted delta_w [L, 3, r, H]
-        modality_keys = ["vis_block", "lang_block", "act_block"] if vla_cfg["model"]["name"] == "octo_small" else ["vis_mlp", "lang_attn", "act_dense"]
-        for l in range(vla_model.num_layers):
-            for m_idx, mod_name in enumerate(modality_keys):
-                key_A = f"base_model.model.layers.{l}.{mod_name}.lora_A.default.weight"
-                if key_A in state_dict:
-                    state_dict[key_A] = delta_w[l, m_idx].to(device)
-        peft_model.load_state_dict(state_dict, strict=False)
+        vla_model.inject_delta_w(delta_w)
 
     peft_model.eval()
 

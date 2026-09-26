@@ -99,7 +99,7 @@ def orchestrate_zoo(
         # 1. Download suite demonstrations
         dl_cmd = [
             python_bin,
-            "data/download_libero.py",
+            "scripts/download_libero.py",
             "--suite", suite,
             "--dest", data_dir,
         ]

@@ -1,5 +1,6 @@
+#!/usr/bin/env python3
 """
-models/download_octo_weights.py
+scripts/download_octo.py
 
 Downloads the official pre-trained Octo-Small checkpoint (~108 MB)
 from Hugging Face (rail-berkeley/octo-small-1.5) to serve as the frozen backbone.
@@ -35,11 +36,11 @@ def download_octo_checkpoint(dest_dir: str = "./checkpoints/octo_pretrained", to
     repo_id = "rail-berkeley/octo-small-1.5"
     hf_tok = get_hf_token(token)
 
-    print("======================================================================")
+    print("=" * 70)
     print(f" Downloading Octo-Small (27M) Pre-Trained Checkpoint from {repo_id}")
     if hf_tok:
         print("  [Auth] Authenticated request active via HF_TOKEN.")
-    print("======================================================================")
+    print("=" * 70)
 
     api = HfApi(token=hf_tok)
     try:
@@ -67,8 +68,8 @@ def download_octo_checkpoint(dest_dir: str = "./checkpoints/octo_pretrained", to
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dest", type=str, default="./checkpoints/octo_pretrained")
+    parser = argparse.ArgumentParser(description="Download pre-trained Octo-Small weights")
+    parser.add_argument("--dest", type=str, default="./checkpoints/octo_pretrained", help="Destination directory")
     parser.add_argument("--token", type=str, default=None, help="Hugging Face API token (or set HF_TOKEN env var)")
     args = parser.parse_args()
     download_octo_checkpoint(dest_dir=args.dest, token=args.token)

@@ -60,6 +60,12 @@ class BaseVLA(nn.Module, ABC):
             dim 2: LoRA rank (r)
             dim 3: Hidden dimension (H)
         """
+    @abstractmethod
+    def inject_delta_w(self, delta_w: torch.Tensor, peft_model: Optional[nn.Module] = None) -> None:
+        """
+        Injects the modality-tensorized LoRA weights Delta W in R^[L, 3, r, H]
+        back into the PEFT model parameters (lora_A).
+        """
         pass
 
     def get_dims(self) -> Tuple[int, int, int, int]:

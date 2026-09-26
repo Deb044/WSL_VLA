@@ -70,8 +70,11 @@ def test_octo_small_lora_and_tensor_slicing():
     delta_w = octo_model.extract_delta_w()
     expected_shape = (8, 3, 16, 384)
     assert delta_w.shape == expected_shape, f"Shape mismatch: expected {expected_shape}, got {delta_w.shape}"
-    assert not torch.isnan(delta_w).any(), "Delta W tensor contains NaN!"
-    print(f"  -> Success: Backbone frozen, LoRA active, Delta W verified with shape: {list(delta_w.shape)}.")
+    # Verify roundtrip injection
+    octo_model.inject_delta_w(delta_w)
+    delta_w_injected = octo_model.extract_delta_w()
+    assert torch.allclose(delta_w, delta_w_injected, atol=1e-5), "Delta W injection roundtrip failed!"
+    print(f"  -> Success: Backbone frozen, LoRA active, Delta W extraction & injection roundtrip verified: {list(delta_w.shape)}.")
 
 
 def test_small_vla_swapping():

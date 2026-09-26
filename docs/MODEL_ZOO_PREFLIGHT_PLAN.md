@@ -457,7 +457,7 @@ Review this table before requesting compute. Do not request compute until all Lo
 
 | Stage | Item | Action / Verification | Status |
 | :--- | :--- | :--- | :---: |
-| **Local** | **Compute Spec Sheet** | Compute sizing justification (Section 2) prepared for proposal submission. | [ ] |
+| **Local** | **Compute Spec Sheet** | Compute sizing justification (Section 2) prepared for cluster provisioning and compute allocation request. | [ ] |
 | **Local** | **Git Cleanliness** | Repository initialized locally; `.gitignore` set for checkpoints, datasets, and logs. | [ ] |
 | **Local** | **Conda Environment** | Local `vla_zoo` environment created; `requirements.txt` exported. | [ ] |
 | **Local** | **Headless Scripts** | `scripts/setup_remote_env.sh` contains `MUJOCO_GL=egl` export. | [ ] |

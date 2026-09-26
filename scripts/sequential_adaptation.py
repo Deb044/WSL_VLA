@@ -106,20 +106,10 @@ def run_sequential_adaptation(
     stored_refined_latents = {} # task_id -> {vis, lang, act}
     stream_performance_matrix = [] # [step, evaluated_task_idx]
 
-    def inject_decoded_weights(peft_net, delta_w_tensor):
-        """Reconstructs and injects decoded Delta W into PEFT LoRA A matrices."""
-        state = peft_net.state_dict()
-        modality_keys = ["vis_block", "lang_block", "act_block"] if vla_cfg["model"]["name"] == "octo_small" else ["vis_mlp", "lang_attn", "act_dense"]
-        for l in range(vla_model.num_layers):
-            for m_idx, mod_name in enumerate(modality_keys):
-                key_A = f"base_model.model.layers.{l}.{mod_name}.lora_A.default.weight"
-                if key_A in state:
-                    state[key_A].copy_(delta_w_tensor[0, l, m_idx])
-
     def evaluate_task_loss(task_id, latent_dict):
         """Computes Behavioral Cloning MSE error on task_id using given latent."""
         rec_dw = autoencoder.decode(latent_dict)
-        inject_decoded_weights(peft_model, rec_dw)
+        vla_model.inject_delta_w(rec_dw)
 
         tname = task_names.get(task_id, task_id)
         hdf5_path = os.path.join(data_dir, f"{task_id}.hdf5")
@@ -194,7 +184,7 @@ def run_sequential_adaptation(
 
             # Decode weights: hat{Delta W} = h_psi(Z)
             rec_delta_w = autoencoder.decode(z_current)
-            inject_decoded_weights(peft_model, rec_delta_w)
+            vla_model.inject_delta_w(rec_delta_w)
 
             # L_task(h_psi(Z))
             pred_act = peft_model(vis_f, lang_e, act_h)

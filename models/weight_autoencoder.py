@@ -159,11 +159,13 @@ class FactorizedWeightAutoencoder(nn.Module):
         latents: dict with 'vis', 'lang', 'act' [Batch, L, d_latent] or 'stacked' [Batch, L, 3, d_latent]
         Returns: hat{Delta W} in R^[Batch, L, 3, r, H]
         """
-        if "stacked" in latents and latents["stacked"] is not None:
+        if "vis" in latents and "lang" in latents and "act" in latents:
+            z_vis, z_lang, z_act = latents["vis"], latents["lang"], latents["act"]
+        elif "stacked" in latents and latents["stacked"] is not None:
             z_stacked = latents["stacked"]
             z_vis, z_lang, z_act = z_stacked[:, :, 0, :], z_stacked[:, :, 1, :], z_stacked[:, :, 2, :]
         else:
-            z_vis, z_lang, z_act = latents["vis"], latents["lang"], latents["act"]
+            raise KeyError("latents must contain either ('vis', 'lang', 'act') or 'stacked'")
 
         B, L, _ = z_vis.shape
         rec_vis = self.decoder(z_vis).view(B, L, 1, self.rank, self.hidden_dim)

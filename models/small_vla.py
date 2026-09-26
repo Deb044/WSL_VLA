@@ -101,13 +101,16 @@ class SmallVLA(BaseVLA):
 
         peft_model = get_peft_model(self, lora_config)
 
-        # Initialize fixed factorized B matrix (WIZARD convention: fixed unit/orthogonal projection)
-        inv_sqrt_r = 1.0 / (rank ** 0.5)
+        # Initialize fixed factorized B matrix (WIZARD convention: fixed deterministic projection)
+        # so that Delta W (A in R^[L, 3, r, H]) directly modulates the forward pass without
+        # being canceled by LayerNorm shift-invariance
         for l in range(self.num_layers):
-            for mod in ["vis_mlp", "lang_attn", "act_dense"]:
+            for m_idx, mod in enumerate(["vis_mlp", "lang_attn", "act_dense"]):
                 layer_mod = getattr(self.layers[l], mod)
                 if hasattr(layer_mod, "lora_B") and hasattr(layer_mod.lora_B, "default"):
-                    layer_mod.lora_B.default.weight.data.fill_(inv_sqrt_r)
+                    g = torch.Generator().manual_seed(1000 + l * 10 + m_idx)
+                    w = torch.randn(layer_mod.lora_B.default.weight.shape, generator=g) / (rank ** 0.5)
+                    layer_mod.lora_B.default.weight.data.copy_(w)
 
         # Use object.__setattr__ to avoid PyTorch circular submodule registration
         object.__setattr__(self, "_peft_model", peft_model)
@@ -132,6 +135,28 @@ class SmallVLA(BaseVLA):
                     raise KeyError(f"Expected key '{key_A}' not found in PEFT parameters!")
 
         return delta_w
+
+    def inject_delta_w(self, delta_w: torch.Tensor, peft_model: Optional[nn.Module] = None) -> None:
+        """
+        Injects Delta W (shape [L, 3, r, H] or [1, L, 3, r, H]) into PEFT lora_A weights.
+        Ensures fixed factorized B projection is preserved.
+        """
+        target_peft = peft_model if peft_model is not None else getattr(self, "_peft_model", None)
+        if target_peft is None:
+            raise RuntimeError("LoRA has not been attached! Call attach_factorized_lora() first.")
+
+        if delta_w.dim() == 5:
+            delta_w = delta_w.squeeze(0)
+
+        modality_keys = ["vis_mlp", "lang_attn", "act_dense"]
+        for l in range(self.num_layers):
+            for m_idx, mod_name in enumerate(modality_keys):
+                layer_mod = getattr(target_peft.base_model.model.layers[l], mod_name)
+                if hasattr(layer_mod, "lora_B") and hasattr(layer_mod.lora_B, "default"):
+                    g = torch.Generator().manual_seed(1000 + l * 10 + m_idx)
+                    w = torch.randn(layer_mod.lora_B.default.weight.shape, generator=g) / (self._lora_rank ** 0.5)
+                    layer_mod.lora_B.default.weight.data.copy_(w.to(layer_mod.lora_B.default.weight.device))
+                layer_mod.lora_A.default.weight.data.copy_(delta_w[l, m_idx].to(layer_mod.lora_A.default.weight.device))
 
     @classmethod
     def from_config(cls, config: dict) -> "SmallVLA":

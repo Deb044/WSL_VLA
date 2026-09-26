@@ -68,6 +68,21 @@ Available schedules:
 
 ### 2.4 Policy Evaluation
 ```bash
-python scripts/evaluate_vla.py
+python scripts/evaluate_vla.py --suite libero_spatial
 ```
 Computes Behavioral Cloning MSE, Cartesian translation RMSE, rotation RMSE, directional cosine similarity, and gripper accuracy across all trained tasks.
+
+### 2.5 Head-to-Head Base vs. Adapted Benchmark
+```bash
+python scripts/compare_base_vs_adapted.py
+```
+Directly measures the empirical performance gap between the unadapted Base VLA and the VLA injected with task-specific factorized weight adapters, validating trajectory error reduction, heading alignment, and gripper precision.
+
+### 2.6 Research-Level Continual Learning Benchmark Suite
+```bash
+python scripts/run_research_benchmark.py --condition all
+```
+Executes the comprehensive continual learning evaluation protocol:
+- Measures the Pearson correlation $r(\text{Latent Drift}, \text{Behavioral Forgetting})$ across visual ($r_{\text{vis}}$), linguistic ($r_{\text{lang}}$), and motor ($r_{\text{act}}$) sub-spaces.
+- Evaluates the 4-way differential regularization ablation suite (Proposed vs. Uniform vs. Direction-Inverted vs. Drift-Informed).
+- Computes Normalized Backward Transfer (NBT) and per-task kilobyte footprint.

@@ -100,6 +100,15 @@ class SmallVLA(BaseVLA):
         )
 
         peft_model = get_peft_model(self, lora_config)
+
+        # Initialize fixed factorized B matrix (WIZARD convention: fixed unit/orthogonal projection)
+        inv_sqrt_r = 1.0 / (rank ** 0.5)
+        for l in range(self.num_layers):
+            for mod in ["vis_mlp", "lang_attn", "act_dense"]:
+                layer_mod = getattr(self.layers[l], mod)
+                if hasattr(layer_mod, "lora_B") and hasattr(layer_mod.lora_B, "default"):
+                    layer_mod.lora_B.default.weight.data.fill_(inv_sqrt_r)
+
         # Use object.__setattr__ to avoid PyTorch circular submodule registration
         object.__setattr__(self, "_peft_model", peft_model)
         return peft_model

@@ -113,8 +113,8 @@ def train_alignment(
         weight_decay=1e-4,
     )
 
-    # Batch size (all available tasks per step for contrastive negatives)
-    batch_size = min(len(dataset), 32)
+    # Batch size (include all available tasks in population for contrastive negatives)
+    batch_size = min(len(dataset), 64)
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,

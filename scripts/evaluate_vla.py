@@ -143,6 +143,8 @@ def main():
     parser.add_argument("--checkpoints_dir", type=str, default="./checkpoints/model_zoo")
     parser.add_argument("--data_dir", type=str, default="./data/libero")
     parser.add_argument("--task_id", type=str, default=None, help="Evaluate specific task ID or all available")
+    parser.add_argument("--suite", type=str, default=None, help="Evaluate only tasks from a specific suite")
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of tasks to evaluate")
     args = parser.parse_args()
 
     with open(args.vla_config, "r") as f:
@@ -164,10 +166,15 @@ def main():
 
     if args.task_id:
         eval_tasks = [args.task_id]
+    elif args.suite:
+        eval_tasks = [t["id"] for t in tasks_cfg["suites"].get(args.suite, {}).get("tasks", [])]
     else:
         # Evaluate all available checkpoints
         ckpt_files = [f for f in os.listdir(args.checkpoints_dir) if f.startswith("task_") and f.endswith(".pt")]
         eval_tasks = [f.replace("task_", "").replace(".pt", "") for f in ckpt_files]
+
+    if args.limit:
+        eval_tasks = sorted(eval_tasks)[: args.limit]
 
     if not eval_tasks:
         print("[ERROR] No checkpoints found to evaluate!")

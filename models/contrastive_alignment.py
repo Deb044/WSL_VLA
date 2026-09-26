@@ -143,8 +143,9 @@ class ModalityContrastiveAligner(nn.Module):
         """
         Calculates L_total = L_recon + lambda_vis L_align^(vis) + lambda_lang L_align^(lang) + lambda_act L_align^(act) + L_aux
         """
-        # 1. Reconstruction Loss (Smooth L1 / Huber Loss on Delta W weights)
-        loss_recon = F.smooth_l1_loss(rec_delta_w, target_delta_w)
+        # 1. Reconstruction Loss: Huber Loss normalized by target variance to balance alignment gradients
+        target_var = target_delta_w.var().clamp(min=1e-5)
+        loss_recon = F.smooth_l1_loss(rec_delta_w, target_delta_w) / target_var
 
         # 2. Project evidence embeddings
         p_ev = self.project_evidence(evidence)

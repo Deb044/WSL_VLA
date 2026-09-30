@@ -9,6 +9,9 @@ Unit test suite for Methodology 1:
 """
 import os
 import sys
+import pytest
+
+pytest.importorskip("peft", reason="legacy PyTorch smoke fixture requires the legacy extra")
 import torch
 import torch.nn.functional as F
 

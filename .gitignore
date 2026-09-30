@@ -52,6 +52,7 @@ venv.bak/
 # --- Experiment Tracking & Logs ---
 wandb/
 logs/
+research_results/
 *.log
 training_*.log
 

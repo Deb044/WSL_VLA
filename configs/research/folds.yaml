@@ -1,0 +1,18 @@
+schema_version: 1
+folds:
+  - name: holdout_libero_spatial
+    train_suites: [libero_object, libero_goal, libero_10]
+    validation_task_indices: [8, 9]
+    test_suite: libero_spatial
+  - name: holdout_libero_object
+    train_suites: [libero_spatial, libero_goal, libero_10]
+    validation_task_indices: [8, 9]
+    test_suite: libero_object
+  - name: holdout_libero_goal
+    train_suites: [libero_spatial, libero_object, libero_10]
+    validation_task_indices: [8, 9]
+    test_suite: libero_goal
+  - name: holdout_libero_10
+    train_suites: [libero_spatial, libero_object, libero_goal]
+    validation_task_indices: [8, 9]
+    test_suite: libero_10

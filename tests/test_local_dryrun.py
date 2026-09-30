@@ -10,6 +10,9 @@ multi-modal evidence extraction, and atomic checkpointing.
 import os
 import sys
 import tempfile
+import pytest
+
+pytest.importorskip("peft", reason="legacy PyTorch smoke fixture requires the legacy extra")
 import torch
 
 # Ensure repository root is on Python path

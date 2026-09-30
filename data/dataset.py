@@ -5,6 +5,7 @@ Dataset loader for LIBERO robotic demonstration trajectories.
 Supports both real HDF5 datasets and synthetic demonstration generation for local dry-runs.
 """
 import os
+import hashlib
 from typing import Tuple, Optional
 import torch
 from torch.utils.data import Dataset
@@ -29,15 +30,18 @@ class LiberoTaskDataset(Dataset):
         img_feat_dim: int = 64,
         lang_embed_dim: int = 384,
         action_dim: int = 7,
+        allow_synthetic: bool = False,
     ):
         self.task_id = task_id
         self.task_instruction = task_instruction
         self.img_feat_dim = img_feat_dim
         self.lang_embed_dim = lang_embed_dim
         self.action_dim = action_dim
+        self.allow_synthetic = allow_synthetic
+        self.data_source = "unknown"
 
         # Initialize consistent task instruction vector
-        g = torch.Generator().manual_seed(abs(hash(self.task_id)) % (2**31))
+        g = torch.Generator().manual_seed(self._stable_seed())
         self.lang_vector = torch.randn(self.lang_embed_dim, generator=g)
 
         # Auto-discover HDF5 file in data_dir if data_path is not explicitly provided
@@ -47,8 +51,20 @@ class LiberoTaskDataset(Dataset):
 
         if resolved_path and os.path.exists(resolved_path):
             self._load_hdf5(resolved_path)
-        else:
+            self.data_source = "real_hdf5"
+        elif allow_synthetic:
             self._generate_synthetic_demos(num_synthetic_samples)
+            self.data_source = "synthetic_smoke_test"
+        else:
+            raise FileNotFoundError(
+                f"No real LIBERO HDF5 data found for task '{task_id}'. "
+                "Synthetic fallback is disabled. Pass allow_synthetic=True only for a labelled smoke test."
+            )
+
+    def _stable_seed(self) -> int:
+        """Process-independent task seed for explicitly requested smoke tests."""
+        digest = hashlib.sha256(self.task_id.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], "big") % (2**31)
 
     def _find_matching_hdf5(self, data_dir: str) -> Optional[str]:
         """Searches data_dir for an HDF5 file matching task_instruction or task_id."""
@@ -71,7 +87,7 @@ class LiberoTaskDataset(Dataset):
         """Loads demonstration episodes and real camera images from an HDF5 dataset."""
         import h5py
         self.samples = []
-        g = torch.Generator().manual_seed(abs(hash(self.task_id)) % (2**31))
+        g = torch.Generator().manual_seed(self._stable_seed())
         self.lang_vector = torch.randn(self.lang_embed_dim, generator=g)
 
         print(f"  [Dataset] Loading real demonstrations from: {os.path.basename(hdf5_path)}")
@@ -104,7 +120,7 @@ class LiberoTaskDataset(Dataset):
 
     def _generate_synthetic_demos(self, num_samples: int):
         """Generates deterministic synthetic demonstration data for on-device dry-runs."""
-        g = torch.Generator().manual_seed(abs(hash(self.task_id)) % (2**31))
+        g = torch.Generator().manual_seed(self._stable_seed())
         
         # Consistent task instruction vector
         self.lang_vector = torch.randn(self.lang_embed_dim, generator=g)

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wsl-vla-research"
+version = "0.1.0"
+description = "Reproducible weight-space alignment experiments for continual VLA learning"
+requires-python = ">=3.10,<3.12"
+dependencies = [
+  "h5py>=3.10",
+  "numpy>=1.24,<2",
+  "pyyaml>=6.0.1",
+  "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-cov>=5"]
+research = [
+  "jax==0.4.20",
+  "flax==0.7.5",
+  "huggingface-hub>=0.20,<1",
+  "optax==0.1.5",
+  "orbax-checkpoint>=0.4,<0.6",
+  "pandas>=2.0",
+  "pyarrow>=14",
+]
+legacy-smoke = [
+  "torch>=2.2",
+  "transformers>=4.40",
+  "peft>=0.10",
+  "einops>=0.7",
+]
+
+[tool.setuptools.packages.find]
+include = ["wsl_vla*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "research: requires the optional JAX/Flax/Octo research environment",
+  "integration: requires external checkpoints, datasets, or a simulator",
+]

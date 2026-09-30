@@ -1,186 +1,110 @@
-# VLA Model Zoo & Weight Space Alignment Pipeline
+# WSL_VLA: Weight-Space Alignment for Continual Robot Learning
 
-**Project**: Weight Space Alignment for Continual Learning in Robotics  
-**Default Model**: **Octo-Small (27M parameters)** with Component-Factorized LoRA  
-**Target Output**: Modality-Factorized LoRA Population ($\Delta W^{(k)} \in \mathbb{R}^{L \times 3 \times r \times H}$) with Multi-Modal Task Evidence ($\mathcal{M}^{(k)} = \{e_{\text{vis}}^{(k)}, e_{\text{lang}}^{(k)}, e_{\text{act}}^{(k)}\}$) and Continual Weight Space Alignment ($g_\phi, h_\psi$).
+This repository now has two deliberately separate paths:
 
----
+1. **Official research path (`wsl_vla/research`)** - pinned Octo-Small 1.5,
+   JAX/Flax, strict real LIBERO data, versioned adapter/evidence contracts,
+   rollout-based continual-learning records, and fail-closed provenance checks.
+2. **Legacy smoke path (`models`, older scripts)** - a small PyTorch policy analogue
+   retained for shape and plumbing checks. It is not official Octo and must not be
+   used for papers, benchmark tables, or claims about pretrained VLAs.
 
-## Directory Organization
+## Scientific scope
 
-```text
-WSL_VLA/
-├── configs/
-│   ├── vla_config.yaml               # Active model config (Octo-Small default), LoRA rank, training params
-│   └── tasks_config.yaml             # 40-task registry across the 4 LIBERO benchmark suites
-├── data/
-│   └── dataset.py                    # PyTorch Dataset with auto-discovery of real HDF5 and synthetic fallback
-├── docs/
-│   ├── METHODOLOGY_1_GUIDE.md        # Complete mathematical formulation and guide for Methodology 1
-│   ├── MODEL_ZOO_PREFLIGHT_PLAN.md   # Strategic pre-flight plan and verification checklist
-│   └── compute.md                    # GPU, VRAM, and storage sizing derivations
-├── models/
-│   ├── base_vla.py                   # Abstract BaseVLA interface & build_vla_model factory
-│   ├── octo_small.py                 # Octo-Small (27M) with factorized LoRA & [8, 3, 16, 384] extract/inject
-│   ├── small_vla.py                  # Lightweight 1.2M model for rapid CPU dry-runs
-│   ├── evidence_extractor.py         # DeepSets (e_vis), Sentence-Transformer (e_lang), Action stats (e_act)
-│   ├── weight_autoencoder.py         # Component-Factorized Weight Autoencoder (g_phi, h_psi) [Methodology 1.1]
-│   ├── contrastive_alignment.py      # Modality-Specific InfoNCE Contrastive Alignment [Methodology 1.2]
-│   └── differential_regularizer.py   # Asymmetric Differential Regularizer & Pi_shell [Methodology 1.3]
-├── scripts/
-│   ├── download_libero.py            # Unified downloader for LIBERO benchmark suites and task subsets
-│   ├── download_octo.py              # Downloader for official pre-trained Octo-Small weights
-│   ├── train_zoo.py                  # Multi-task training loop with atomic saving and crash recovery
-│   ├── orchestrate_zoo.py            # Automated multi-suite Model Zoo pipeline execution
-│   ├── verify_zoo.py                 # Population integrity validator & [N, 8, 3, 16, 384] tensor aggregator
-│   ├── evaluate_vla.py               # Comprehensive evaluation suite (MSE, RMSE, Cosine Sim, Gripper Acc)
-│   ├── train_alignment.py            # Weight-Space Contrastive Alignment training loop [Methodology 1.2]
-│   ├── sequential_adaptation.py      # Continual learning stream adaptation with gamma_vis > gamma_act [Methodology 1.3]
-│   ├── run_research_benchmark.py     # Full continual learning benchmark: Pearson correlation & 4-way ablations
-│   └── compare_base_vs_adapted.py    # Direct head-to-head empirical benchmark: Base VLA vs Adapted VLA
-├── tests/
-│   ├── test_local_dryrun.py          # Pre-flight unit tests (Octo-Small, factory, LoRA, evidence, roundtrip)
-│   └── test_methodology1.py          # Methodology 1 unit tests (Autoencoder, Alignment loss, Pi_shell, Reg)
-├── setup_windows.ps1                 # Automated Windows PowerShell environment installer
-├── setup_env.sh                      # Automated Linux/WSL installer (CUDA, EGL)
-├── setup_mac.sh                      # Automated macOS installer (MPS, CGL)
-├── requirements.txt                  # Pinned dependencies
-├── environment.yml                   # Conda environment definition
-└── .gitignore                        # Excludes large binaries (HDF5 datasets, checkpoints, caches)
-```
+The local study tests three hypotheses:
 
----
+- task evidence can organize modality-factorized adapter updates in an aligned
+  weight latent space;
+- mapped latents improve held-out task initialization and matched-step adaptation;
+- stronger visual/language than action regularization improves retention in a
+  genuinely shared sequential policy state.
 
-## Environment Setup & Unit Tests
+Large-VLA generalization is a later confirmation phase and is not implied by the
+Octo-Small results.
+
+## Research environment
+
+The official path targets Ubuntu/WSL2, Python 3.10 or 3.11, CUDA, and an NVIDIA
+GPU with at least 8 GB memory. Octo is pinned to commit
+`241fb3514b7c40957a86d869fecb7c7fc353f540`; the model configuration pins
+`rail-berkeley/octo-small-1.5` and records the resolved checkpoint hash in every
+run.
 
 ```bash
-# 1. Environment installation (Ubuntu/Linux)
-bash setup_env.sh
-conda activate vla_zoo
-
-# 2. Run unit tests
-python tests/test_local_dryrun.py       # Pre-flight architecture and factory tests
-python tests/test_methodology1.py       # Weight autoencoder and alignment tests
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+python3.10 -m venv .venv-research
+source .venv-research/bin/activate
+pip install -r requirements-research.txt
+python scripts/research_preflight.py
+python scripts/verify_official_octo.py
+pytest -m "not integration"
 ```
 
----
+The preflight fails when real data, pinned dependencies, task counts, episode
+structure, CUDA safeguards, or checkpoint provenance are missing. Use
+`--host-inspection-only` only to inspect an incompatible development host.
+After the Octo equivalence gate, create each run's manifest with
+`scripts/write_run_manifest.py`; it hashes all ten suite datasets and records
+the code revision, dirty state, hardware, environment, base hash, seeds, and
+task order before training begins.
 
-## Scripts Usage Guide
+## Publication protocol
 
-### 1. Data & Pre-Trained Weights Staging
+- Exact ten-task orders are in `configs/reference_tasks.yaml`.
+- `configs/research/base.yaml` locks three seeds, three late checkpoints per
+  task, baselines, rollout counts, and output locations.
+- Four leave-one-suite-out folds train alignment/mapping on the other three
+  suites; task indices 8 and 9 within those suites are reserved for calibration.
+- The expected model zoo contains `40 × 3 × 3 = 360` adapter checkpoints, all
+  tied to one immutable base hash.
+- Standard research outputs live under ignored `research_results/` and contain
+  manifests, checkpoints, JSONL rollout records, and generated tables/figures.
 
-#### `scripts/download_libero.py`
-Downloads demonstration datasets from Hugging Face (`yifengzhu-hf/LIBERO-datasets`).
+See `docs/RESEARCH_PIPELINE.md` for the data contracts, commands, experiment
+gates, and interpretation rules.
+
+## Implemented research utilities
+
+- Official Octo transformer patch with zero-initialized visual, language, and
+  action-readout adapters after every transformer block, plus differentiable
+  low-rank updates to the official diffusion action head.
+- Basis-invariant packing of effective low-rank updates into masked WeightCLIP
+  windows.
+- Strict HDF5 episode validation and leakage-free splits.
+- Shared masked weight autoencoder, trainable evidence encoders, multi-positive
+  InfoNCE, empirical shells, differentiable latent refinement, and a linear
+  ridge prompt-to-latent mapper.
+- Exact SR, NBT, normalized NBT, forgetting, forward-transfer, recovery, and
+  bootstrap correlation utilities.
+- Immutable rollout record and run-manifest schemas.
+
+## Alignment archive and training
+
+Each population sample directory contains `adapter.npz`, `evidence.npz`, and
+`metadata.json`. Assemble and train with:
+
 ```bash
-# Download all 40 tasks across all suites
-python scripts/download_libero.py --suite all
+python scripts/build_alignment_archive.py research_results/population \
+  --output research_results/alignment/fold.npz \
+  --held-out-suite libero_spatial
 
-# Download a specific suite (or limit to N tasks to conserve disk)
-python scripts/download_libero.py --suite libero_spatial --max_tasks 4
+python scripts/train_research_alignment.py research_results/alignment/fold.npz \
+  --output research_results/checkpoints/alignment/fold
 ```
-* Key flags: `--suite {all, libero_spatial, libero_object, libero_goal, libero_10}`, `--dest <path>`, `--max_tasks <int>`, `--token <hf_token>`.
 
-#### `scripts/download_octo.py`
-Downloads official pre-trained Octo-Small checkpoint weights (~108 MB) from `rail-berkeley/octo-small-1.5`.
+No test-suite samples are accepted in an alignment archive. Multiple checkpoints
+from the same task share a positive label in contrastive training.
+
+## Reporting
+
+Rollout evaluators append one `EvaluationRecord` per matrix cell. Metrics are
+computed only from the immutable records:
+
 ```bash
-python scripts/download_octo.py --dest ./checkpoints/octo_pretrained
+python scripts/report_research_metrics.py research_results/records/run.jsonl \
+  --suite libero_spatial --seed 42 --condition proposed_asymmetric
 ```
 
----
-
-### 2. Model Zoo Training & Verification
-
-#### `scripts/train_zoo.py`
-Trains task-specific factorized LoRA weights $\Delta W \in \mathbb{R}^{L \times 3 \times r \times H}$ and extracts task evidence.
-```bash
-# Train a specific task
-python scripts/train_zoo.py --task libero_spatial_0 --max_steps 500
-
-# Train an entire suite
-python scripts/train_zoo.py --suite libero_spatial --max_steps 500
-```
-* Key flags: `--task <task_id>`, `--suite <suite_name>`, `--max_steps <int>`, `--batch_size <int>`.
-
-#### `scripts/orchestrate_zoo.py`
-Automates the full pipeline: sequentially stages datasets and trains checkpoints across all 4 suites.
-```bash
-python scripts/orchestrate_zoo.py --max_steps 500
-```
-
-#### `scripts/verify_zoo.py`
-Validates checkpoint integrity, tensor dimensions $[L, 3, r, H]$, and aggregates all 40 checkpoints into a tensor stack.
-```bash
-python scripts/verify_zoo.py --dir ./checkpoints/model_zoo
-```
-
----
-
-### 3. Weight Space Alignment & Continual Learning
-
-#### `scripts/train_alignment.py`
-Trains the Component-Factorized Weight Autoencoder $(g_\phi, h_\psi)$ and Modality-Specific InfoNCE Contrastive Aligner.
-```bash
-python scripts/train_alignment.py --checkpoint_dir ./checkpoints/model_zoo --epochs 150 --batch_size 40
-```
-* Key flags: `--checkpoint_dir <dir>`, `--epochs <int>`, `--batch_size <int>`, `--d_latent <int>`.
-
-#### `scripts/sequential_adaptation.py`
-Runs sequential task stream adaptation with custom differential regularization ratios ($\gamma_{\text{vis}}, \gamma_{\text{lang}}, \gamma_{\text{act}}$).
-```bash
-python scripts/sequential_adaptation.py --schedule fixed --gamma_vis 1.0 --gamma_lang 1.0 --gamma_act 0.2
-```
-* Key flags: `--schedule {fixed, drift_informed, adaptive}`, `--gamma_vis <float>`, `--gamma_lang <float>`, `--gamma_act <float>`.
-
-#### `scripts/run_research_benchmark.py`
-Executes the comprehensive continual learning benchmark (4-way ablations, Component-Swap protocol, Pearson correlations, NBT).
-```bash
-# Run all 4 ablation regimes across all 40 LIBERO tasks
-python scripts/run_research_benchmark.py --suite all --condition all
-
-# Run a specific experimental condition or suite
-python scripts/run_research_benchmark.py --suite libero_spatial --condition proposed
-```
-* Key flags:
-  * `--suite {all, libero_spatial, libero_object, libero_goal, libero_10}`
-  * `--condition {all, proposed, uniform, direction_inverted, drift_informed}`
-  * `--refine_steps <int>` (default: 20)
-
-#### `scripts/sweep_gammas.py`
-Performs an empirical hyperparameter sweep over $(\gamma_{\text{vis}}, \gamma_{\text{lang}}, \gamma_{\text{act}})$ using end-to-end differentiable latent optimization to identify Pareto-optimal regularization values.
-```bash
-# Run focused grid search across tasks
-python scripts/sweep_gammas.py --suite all --max_tasks 10 --search_type focused_grid
-
-# Run sensitivity sweep on action head or vision/language regularizers
-python scripts/sweep_gammas.py --suite all --max_tasks 10 --search_type sensitivity_act
-python scripts/sweep_gammas.py --suite all --max_tasks 10 --search_type sensitivity_vis
-```
-* Key flags:
-  * `--search_type {focused_grid, sensitivity_act, sensitivity_vis, full_grid}`
-  * `--suite {all, libero_spatial, libero_object, libero_goal, libero_10}`
-  * `--max_tasks <int>` (default: 5)
-  * `--refine_steps <int>` (default: 25)
-
----
-
-### 4. Evaluation & Head-to-Head Benchmarks
-
-#### `scripts/compare_base_vs_adapted.py`
-Empirical head-to-head comparison of zero-shot unadapted Base VLA against the VLA equipped with task weight adapters.
-```bash
-# Compare across all 40 LIBERO tasks
-python scripts/compare_base_vs_adapted.py --suite all
-
-# Compare on a specific suite
-python scripts/compare_base_vs_adapted.py --suite libero_spatial
-```
-
-#### `scripts/evaluate_vla.py`
-Computes detailed trajectory tracking metrics: Action MSE/RMSE, directional cosine similarity, Cartesian translation/rotation error, and gripper accuracy.
-```bash
-# Evaluate all tasks in a suite
-python scripts/evaluate_vla.py --suite libero_spatial
-
-# Evaluate a specific single task checkpoint
-python scripts/evaluate_vla.py --task libero_spatial_0
-```
+Offline action MSE is diagnostic only. Publication claims require rollout-based
+success matrices, three seeds, confidence intervals, complete provenance, and
+the locked ablation set.

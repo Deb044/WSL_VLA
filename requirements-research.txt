@@ -1,0 +1,10 @@
+# Linux/WSL2 CUDA 11 research environment.
+-e .[research,test]
+
+# Match the official Octo GPU installation on CUDA 11 under WSL2.
+--find-links https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+jax[cuda11_pip]==0.4.20
+
+# Official Octo implementation pinned to the revision used when this research
+# path was introduced. Do not replace this with a floating branch.
+octo @ git+https://github.com/octo-models/octo.git@241fb3514b7c40957a86d869fecb7c7fc353f540

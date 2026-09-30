@@ -188,3 +188,18 @@ official LIBERO initialization indices and rollout seeds. It persists all
 episode outcomes and the reloadable trained adapter, and advances only when
 both repetitions are deterministic and the adapted success rate is strictly
 higher than the frozen-base rate.
+
+Gate 4 reuses the production continual runner but is explicitly separated from
+the ten-task study output:
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+python scripts/run_official_continual.py \
+  --suite libero_spatial --condition sequential_no_regularization \
+  --seed 17 --task-count 2
+```
+
+The runner trains one evolving adapter and writes all three valid cells of the
+two-stage lower-triangular success matrix. The future-task cell at stage zero is
+explicitly stored as null; it is not fabricated from a separately trained
+adapter. Gamma-selection input is required only for latent-space conditions.

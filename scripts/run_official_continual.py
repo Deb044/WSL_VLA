@@ -35,6 +35,7 @@ from wsl_vla.data.streams import (
     sample_replay_transitions,
 )
 from wsl_vla.evaluation.libero_rollout import LiberoRolloutEvaluator, OctoLiberoPolicy
+from wsl_vla.evaluation.gates import two_task_success_matrix
 from wsl_vla.evaluation.records import append_evaluation_record
 from wsl_vla.evaluation.sequential import (
     StageUpdate,
@@ -45,7 +46,7 @@ from wsl_vla.experiments.conditions import (
     PRIMARY_CONDITIONS,
     PerTaskReplayMemory,
     load_gamma_selection,
-    locked_condition_specs,
+    resolve_condition_spec,
 )
 from wsl_vla.experiments.protocol import (
     LIBERO_GIT_REVISION,
@@ -247,7 +248,7 @@ def _parse_args():
     parser.add_argument("--suite", required=True, choices=REQUIRED_SUITES)
     parser.add_argument("--condition", required=True, choices=PRIMARY_CONDITIONS)
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--gamma-selection", required=True)
+    parser.add_argument("--gamma-selection")
     parser.add_argument("--alignment-checkpoint")
     parser.add_argument("--reconstruction-checkpoint")
     parser.add_argument("--evidence-root")
@@ -265,6 +266,13 @@ def _parse_args():
     parser.add_argument("--steps", type=int)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--batch-size", type=int)
+    parser.add_argument(
+        "--task-count",
+        type=int,
+        choices=(2, 10),
+        default=10,
+        help="Use 2 only for the official pre-scaling shared-state gate.",
+    )
     return parser.parse_args()
 
 
@@ -286,12 +294,18 @@ def main() -> int:
     assert_installed_vcs_revision("octo", OCTO_GIT_REVISION)
     assert_installed_vcs_revision("libero", LIBERO_GIT_REVISION)
 
-    selection = load_gamma_selection(args.gamma_selection, held_out_suite=args.suite)
-    condition = next(item for item in locked_condition_specs(selection) if item.name == args.condition)
+    selection = (
+        load_gamma_selection(args.gamma_selection, held_out_suite=args.suite)
+        if args.gamma_selection
+        else None
+    )
+    condition = resolve_condition_spec(args.condition, selection)
+    if args.task_count == 2 and args.condition != "sequential_no_regularization":
+        raise ValueError("the two-task scaling gate uses sequential_no_regularization")
     suite_tasks = tuple(tasks["suites"][args.suite])
-    task_ids = tuple(f"{args.suite}_{index}" for index in range(10))
+    task_ids = tuple(f"{args.suite}_{index}" for index in range(args.task_count))
     data_root = Path(args.data_root or config["data"]["root"])
-    data_files = load_suite_manifest(data_root / args.suite, suite_tasks)
+    data_files = load_suite_manifest(data_root / args.suite, suite_tasks)[: args.task_count]
     dataset_hashes = {task_id: sha256_file(path) for task_id, path in zip(task_ids, data_files)}
 
     bundle = load_research_octo(
@@ -326,7 +340,14 @@ def main() -> int:
             raise ValueError("alignment AdapterSpec differs from the live Octo adapter layout")
 
     run_id = f"{args.suite}-{args.seed}-{args.condition}-{uuid.uuid4().hex[:12]}"
-    run_root = Path(args.output_root) / args.suite / f"seed_{args.seed}" / args.condition
+    protocol_root = "two_task_gate" if args.task_count == 2 else "ten_task_study"
+    run_root = (
+        Path(args.output_root)
+        / protocol_root
+        / args.suite
+        / f"seed_{args.seed}"
+        / args.condition
+    )
     if run_root.exists():
         raise FileExistsError(f"refusing to overwrite an existing research run: {run_root}")
     run_root.mkdir(parents=True)
@@ -361,9 +382,17 @@ def main() -> int:
                 config["continual_learning"]["gradient_accumulation_steps"]
             ),
             "rollouts_per_cell": rollouts,
-            "gamma_selection": str(Path(args.gamma_selection).resolve()),
-            "gamma_selection_sha256": sha256_file(args.gamma_selection),
-            "early_stopping_patience": selection.early_stopping_patience,
+            "task_count": args.task_count,
+            "scaling_gate": args.task_count == 2,
+            "gamma_selection": (
+                str(Path(args.gamma_selection).resolve()) if args.gamma_selection else None
+            ),
+            "gamma_selection_sha256": (
+                sha256_file(args.gamma_selection) if args.gamma_selection else None
+            ),
+            "early_stopping_patience": (
+                selection.early_stopping_patience if selection is not None else None
+            ),
         },
         hardware=capture_hardware(),
         environment=capture_environment(("jax", "flax", "optax", "octo", "libero")),
@@ -592,6 +621,35 @@ def main() -> int:
         else:
             _, records = run_sequential_protocol(
                 train_stage=train_stage, condition=args.condition, **common
+            )
+        if args.task_count == 2:
+            matrix = two_task_success_matrix(records)
+            _atomic_bytes(
+                run_root / "two_task_gate.json",
+                (
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "passed": True,
+                            "run_id": run_id,
+                            "suite": args.suite,
+                            "seed": args.seed,
+                            "condition": args.condition,
+                            "matrix_axes": {
+                                "rows": "training_stage",
+                                "columns": "evaluated_task_index",
+                            },
+                            "success_rate_matrix": [
+                                [None if np.isnan(value) else float(value) for value in row]
+                                for row in matrix
+                            ],
+                            "expected_missing_cell": [0, 1],
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                ).encode(),
             )
         manifest.finished_at = datetime.now(timezone.utc).isoformat()
         write_manifest_atomic(manifest, manifest_path)

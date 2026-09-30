@@ -9,6 +9,7 @@ from wsl_vla.experiments.conditions import (
     ReplayTransition,
     locked_condition_specs,
     load_gamma_selection,
+    resolve_condition_spec,
     save_gamma_selection,
 )
 
@@ -44,6 +45,14 @@ def test_all_locked_conditions_are_explicit_and_direction_is_inverted():
     ].gammas["vision"]
     assert not by_name["reconstruction_only_latent"].aligned_latent_space
     assert by_name["independent_adapter_oracle"].independent_per_task
+
+
+def test_nonlatent_conditions_do_not_require_irrelevant_gamma_selection():
+    assert resolve_condition_spec("sequential_no_regularization").optimization_space == "lora"
+    assert resolve_condition_spec("replay_10").replay_per_previous_task == 10
+    assert resolve_condition_spec("independent_adapter_oracle").independent_per_task
+    with pytest.raises(ValueError, match="requires a validation-frozen"):
+        resolve_condition_spec("proposed_asymmetric")
 
 
 def test_test_suite_cannot_select_gammas():

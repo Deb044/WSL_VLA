@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..contracts import EvaluationRecord
 from .libero_rollout import TaskRolloutSummary
 
 
@@ -90,3 +91,23 @@ def one_task_learning_gate(
     if enforce and not result.passed:
         raise AssertionError(f"one-task learning gate failed: {result}")
     return result
+
+
+def two_task_success_matrix(records: tuple[EvaluationRecord, ...]) -> np.ndarray:
+    """Build the locked lower-triangular 2-task scaling-gate matrix."""
+
+    expected = {(0, 0), (1, 0), (1, 1)}
+    observed = {
+        (record.training_stage, record.evaluated_task_index) for record in records
+    }
+    if observed != expected or len(records) != len(expected):
+        raise ValueError(
+            "two-task gate requires exactly the stage/task cells (0,0), (1,0), and (1,1)"
+        )
+    identities = {(record.run_id, record.suite, record.seed, record.condition) for record in records}
+    if len(identities) != 1:
+        raise ValueError("two-task gate records must belong to one run")
+    matrix = np.full((2, 2), np.nan, dtype=np.float64)
+    for record in records:
+        matrix[record.training_stage, record.evaluated_task_index] = record.success_rate
+    return matrix

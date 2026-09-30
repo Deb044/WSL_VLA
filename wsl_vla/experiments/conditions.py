@@ -144,6 +144,33 @@ def locked_condition_specs(selection: GammaSelection) -> tuple[ConditionSpec, ..
     return specs
 
 
+def resolve_condition_spec(
+    name: str, selection: GammaSelection | None = None
+) -> ConditionSpec:
+    """Resolve a condition without requiring irrelevant gamma-selection data."""
+
+    if name not in PRIMARY_CONDITIONS:
+        raise ValueError(f"unknown publication condition: {name}")
+    zero = {modality: 0.0 for modality in MODALITIES}
+    static = {
+        "sequential_no_regularization": ConditionSpec(
+            "sequential_no_regularization", "lora", 0, zero, None
+        ),
+        "replay_10": ConditionSpec("replay_10", "lora", 10, zero, None),
+        "replay_100": ConditionSpec("replay_100", "lora", 100, zero, None),
+        "independent_adapter_oracle": ConditionSpec(
+            "independent_adapter_oracle", "oracle", 0, zero, None, True
+        ),
+    }
+    if name in static:
+        result = static[name]
+        result.validate()
+        return result
+    if selection is None:
+        raise ValueError(f"{name} requires a validation-frozen gamma selection")
+    return next(item for item in locked_condition_specs(selection) if item.name == name)
+
+
 @dataclass(frozen=True)
 class ReplayTransition:
     task_id: str

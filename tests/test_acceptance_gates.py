@@ -1,8 +1,14 @@
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
-from wsl_vla.evaluation.gates import one_task_learning_gate, rollout_summaries_match
+from wsl_vla.contracts import EvaluationRecord
+from wsl_vla.evaluation.gates import (
+    one_task_learning_gate,
+    rollout_summaries_match,
+    two_task_success_matrix,
+)
 from wsl_vla.evaluation.libero_rollout import EpisodeRollout, TaskRolloutSummary
 
 
@@ -75,3 +81,38 @@ def test_one_task_gate_rejects_mismatched_task_population():
             adapted_first=adapted,
             adapted_repeat=wrong_task,
         )
+
+
+def evaluation_record(stage: int, task: int, successes: int) -> EvaluationRecord:
+    return EvaluationRecord(
+        run_id="run",
+        suite="libero_spatial",
+        seed=17,
+        condition="sequential_no_regularization",
+        training_stage=stage,
+        evaluated_task_index=task,
+        evaluated_task_id=f"libero_spatial_{task}",
+        rollout_count=4,
+        successes=successes,
+        checkpoint_sha256="a" * 64,
+        latent_drift={"vision": 0.0, "language": 0.0, "action": 0.0},
+        wall_time_seconds=1.0,
+        initialization_indices=(0, 1, 2, 3),
+        rollout_seeds=(10, 11, 12, 13),
+        evaluation_wall_time_seconds=1.0,
+    )
+
+
+def test_two_task_gate_requires_complete_lower_triangle():
+    records = (
+        evaluation_record(0, 0, 1),
+        evaluation_record(1, 0, 2),
+        evaluation_record(1, 1, 3),
+    )
+    matrix = two_task_success_matrix(records)
+    assert matrix[0, 0] == 0.25
+    assert matrix[1, 0] == 0.5
+    assert matrix[1, 1] == 0.75
+    assert np.isnan(matrix[0, 1])
+    with pytest.raises(ValueError, match="exactly"):
+        two_task_success_matrix(records[:-1])

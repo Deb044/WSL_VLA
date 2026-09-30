@@ -291,3 +291,52 @@ class OODEvaluationRecord:
         if min(self.wall_time_seconds, self.adapter_bytes, self.evidence_bytes) < 0:
             raise ValueError("OOD runtime and memory values cannot be negative")
         return self.successes / self.rollout_count
+
+
+@dataclass(frozen=True)
+class ComponentSwapRecord:
+    run_id: str
+    suite: str
+    seed: int
+    condition: str
+    transition_stage: int
+    evaluated_task_id: str
+    swap_condition: str
+    rollout_count: int
+    baseline_successes: int
+    swapped_successes: int
+    initialization_indices: Sequence[int]
+    previous_checkpoint_sha256: str
+    current_checkpoint_sha256: str
+    swapped_checkpoint_sha256: str
+    latent_drift: Mapping[str, float]
+    schema_version: int = SCHEMA_VERSION
+
+    @property
+    def success_rate_drop(self) -> float:
+        if self.transition_stage <= 0:
+            raise ValueError("component swaps require a consecutive post-task transition")
+        if self.swap_condition not in {
+            "vision",
+            "language",
+            "action",
+            "vision_language",
+            "full",
+        }:
+            raise ValueError("unknown component swap condition")
+        if self.rollout_count <= 0:
+            raise ValueError("component swap rollout_count must be positive")
+        if not 0 <= self.baseline_successes <= self.rollout_count:
+            raise ValueError("baseline successes lie outside the rollout count")
+        if not 0 <= self.swapped_successes <= self.rollout_count:
+            raise ValueError("swapped successes lie outside the rollout count")
+        if len(self.initialization_indices) != self.rollout_count:
+            raise ValueError("component swaps require fixed initialization identities")
+        for digest in (
+            self.previous_checkpoint_sha256,
+            self.current_checkpoint_sha256,
+            self.swapped_checkpoint_sha256,
+        ):
+            if len(digest) != 64:
+                raise ValueError("component swap checkpoint identity is not SHA-256")
+        return (self.baseline_successes - self.swapped_successes) / self.rollout_count

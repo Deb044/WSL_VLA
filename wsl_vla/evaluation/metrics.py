@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import numpy as np
 from scipy import stats
@@ -151,4 +151,68 @@ def continual_learning_metrics(
     }
     if independent_baseline is not None:
         result["forward_transfer"] = forward_transfer(matrix, independent_baseline)
+    return result
+
+
+def drift_degradation_correlations(
+    records: Iterable[Any],
+    *,
+    condition: str,
+    resamples: int = 10_000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> dict[str, dict[str, CorrelationEstimate]]:
+    """Correlate drift and forgetting once per seed/suite/stage transition.
+
+    Behavioural degradation is averaged across tasks learned before a stage.
+    This avoids treating one stage's repeated drift value as independent once
+    per evaluated task.
+    """
+
+    selected = [record for record in records if record.condition == condition]
+    by_run: dict[tuple[str, str, int], dict[tuple[int, int], Any]] = {}
+    for record in selected:
+        run_key = (record.run_id, record.suite, record.seed)
+        cell = (record.training_stage, record.evaluated_task_index)
+        if cell in by_run.setdefault(run_key, {}):
+            raise ValueError(f"duplicate evaluation cell for drift analysis: {run_key}/{cell}")
+        by_run[run_key][cell] = record
+
+    samples = []
+    for run_key, cells in by_run.items():
+        for stage in sorted({stage for stage, _ in cells}):
+            if stage == 0:
+                continue
+            drops = []
+            for task in range(stage):
+                previous = cells.get((stage - 1, task))
+                current = cells.get((stage, task))
+                if previous is None or current is None:
+                    raise ValueError(
+                        f"incomplete consecutive cells for drift analysis: {run_key}/stage {stage}"
+                    )
+                drops.append(previous.success_rate - current.success_rate)
+            stage_records = [cells[(stage, task)] for task in range(stage + 1)]
+            drifts = {tuple(sorted(item.latent_drift.items())) for item in stage_records}
+            if len(drifts) != 1:
+                raise ValueError("latent drift differs across cells from one training stage")
+            samples.append((dict(next(iter(drifts))), float(np.mean(drops))))
+    if len(samples) < 3:
+        raise ValueError("drift analysis requires at least three stage-transition samples")
+
+    degradation = np.asarray([item[1] for item in samples], dtype=np.float64)
+    result = {}
+    for modality in ("vision", "language", "action"):
+        drift = np.asarray([item[0][modality] for item in samples], dtype=np.float64)
+        result[modality] = {
+            method: bootstrap_correlation(
+                drift,
+                degradation,
+                method=method,
+                resamples=resamples,
+                confidence=confidence,
+                seed=seed,
+            )
+            for method in ("pearson", "spearman")
+        }
     return result

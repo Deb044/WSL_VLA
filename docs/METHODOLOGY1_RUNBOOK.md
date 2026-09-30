@@ -190,11 +190,17 @@ python scripts/report_component_swaps.py "$M1_PUB/component_swaps" \
   --output-json "$M1_PUB/reports/component_swaps.json" \
   --output-parquet "$M1_PUB/reports/component_swaps.parquet" \
   --output-figure "$M1_PUB/reports/component_drift_scatter.png"
+
+python scripts/audit_methodology1_study.py "$M1_ROOT" \
+  --output "$M1_PUB/reports/completion_audit.json"
 ```
 
 The reporter rejects missing cells, mixed run identities, inconsistent rollout
 budgets, and absent conditions. It uses crossed suite/seed bootstrap intervals.
 Offline losses are diagnostic only.
+The final audit exits non-zero unless every mandatory gate, fold, run, probe,
+record count, report, and provenance-consistency check is present. During an
+active cluster run, add `--allow-incomplete` to save a progress snapshot.
 
 ## 9. Scheduler, resume, and transfer rules
 

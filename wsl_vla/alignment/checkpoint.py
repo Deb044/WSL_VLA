@@ -11,7 +11,13 @@ import numpy as np
 from ..adapters.latent import decoded_token_task_loss
 from ..contracts import AdapterSpec, AlignmentCheckpoint
 from .mapping import LinearRidgeMapper
-from .models import AlignmentSystem, EmpiricalShell, project_to_empirical_shell, refine_latents
+from .models import (
+    AlignmentSystem,
+    EmpiricalShell,
+    assert_task_loss_gradients,
+    project_to_empirical_shell,
+    refine_latents,
+)
 
 
 COMPONENT_INDEX = {"vision": 0, "language": 1, "action": 2}
@@ -196,6 +202,12 @@ def refine_alignment_latents(
         )
         return loss_and_metrics[0]
 
+    # Publication runs fail before optimization if any modality is detached
+    # from the real decoded-adapter -> Octo -> diffusion-loss computation.
+    assert_task_loss_gradients(
+        initial,
+        task_loss=lambda values: task_loss(values, batches[0]),
+    )
     return refine_latents(
         initial,
         task_loss=task_loss,

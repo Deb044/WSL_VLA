@@ -127,7 +127,21 @@ per-token shell, decodes the combined sequence, and refines it through official
 Octo diffusion loss.
 The reconstruction-only control is trained with the identical command and
 `--contrastive-weight 0`; held-out retrieval and mapper quality must pass
-`alignment_advantage_gate` before the aligned checkpoint advances.
+`alignment_advantage_gate` before the aligned checkpoint advances. Run the
+executable gate against the exact archive used by both checkpoints:
+
+```bash
+python scripts/run_alignment_advantage_gate.py artifacts/fold/archive.npz \
+  --aligned-checkpoint artifacts/fold/aligned \
+  --reconstruction-checkpoint artifacts/fold/reconstruction_only \
+  --output artifacts/fold/alignment_advantage.json
+```
+
+The gate reads only the locked validation tasks, reports retrieval and complete
+latent-sequence mapper MSE for every modality, and applies a predeclared macro
+decision: aligned retrieval must be strictly higher and aligned mapper MSE must
+be strictly lower. A failed comparison is still written to JSON and exits
+non-zero so the negative result is retained while later scaling is stopped.
 
 ## 5. Sequential evaluation contract
 

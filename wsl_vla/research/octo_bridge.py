@@ -315,6 +315,7 @@ def build_adapter_spec_and_factors(
     bundle: ResearchOctoBundle,
     *,
     token_width: int = 384,
+    adapter_state: Any | None = None,
 ):
     """Extract every transformer and diffusion-head factor in canonical form."""
 
@@ -346,7 +347,16 @@ def build_adapter_spec_and_factors(
         up_path = tuple(up_path)
         if up_path not in flat:
             raise ValueError(f"missing paired up factor for {path_string(path)}")
-        down, up = value, flat[up_path]
+        if adapter_state is None:
+            down, up = value, flat[up_path]
+        else:
+            down_key = path_string(path)
+            up_key = path_string(up_path)
+            try:
+                down = adapter_state["transformer"][down_key]
+                up = adapter_state["transformer"][up_key]
+            except KeyError as exc:
+                raise ValueError(f"trained adapter state lacks {exc.args[0]}") from exc
         logical_path = path_string(path[:matched_index] + (str(path[matched_index]).removesuffix("_down"),))
         entry = AdapterEntry(
             component=Component(match.group(1)),
@@ -360,7 +370,11 @@ def build_adapter_spec_and_factors(
 
     for head_index, path in enumerate(bundle.diffusion_kernel_paths):
         encoded = path_string(path)
-        pair = bundle.diffusion_factors[encoded]
+        pair = (
+            bundle.diffusion_factors[encoded]
+            if adapter_state is None
+            else adapter_state["diffusion"][encoded]
+        )
         down, up = pair["down"], pair["up"]
         entry = AdapterEntry(
             component=Component.ACTION,

@@ -9,7 +9,7 @@ from typing import Iterable
 
 import numpy as np
 
-from ..contracts import EvaluationRecord
+from ..contracts import ComponentSwapRecord, EvaluationRecord, OODEvaluationRecord
 
 
 def append_evaluation_record(record: EvaluationRecord, path: str | Path) -> None:
@@ -32,6 +32,48 @@ def load_evaluation_records(path: str | Path) -> tuple[EvaluationRecord, ...]:
                 records.append(EvaluationRecord(**json.loads(line)))
             except Exception as exc:
                 raise ValueError(f"invalid evaluation record on line {line_number}") from exc
+    return tuple(records)
+
+
+def append_ood_evaluation_record(record: OODEvaluationRecord, path: str | Path) -> None:
+    _append_validated_record(record, path, validation=lambda item: item.success_rate)
+
+
+def load_ood_evaluation_records(path: str | Path) -> tuple[OODEvaluationRecord, ...]:
+    return _load_typed_records(path, OODEvaluationRecord)
+
+
+def append_component_swap_record(record: ComponentSwapRecord, path: str | Path) -> None:
+    _append_validated_record(record, path, validation=lambda item: item.success_rate_drop)
+
+
+def load_component_swap_records(path: str | Path) -> tuple[ComponentSwapRecord, ...]:
+    return _load_typed_records(path, ComponentSwapRecord)
+
+
+def _append_validated_record(record, path: str | Path, *, validation) -> None:
+    validation(record)
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(asdict(record), sort_keys=True) + "\n")
+
+
+def _load_typed_records(path: str | Path, record_type):
+    records = []
+    with Path(path).open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            if not line.strip():
+                continue
+            try:
+                record = record_type(**json.loads(line))
+                if isinstance(record, OODEvaluationRecord):
+                    _ = record.success_rate
+                else:
+                    _ = record.success_rate_drop
+                records.append(record)
+            except Exception as exc:
+                raise ValueError(f"invalid {record_type.__name__} on line {line_number}") from exc
     return tuple(records)
 
 

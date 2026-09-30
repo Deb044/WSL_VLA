@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 from scipy import stats
@@ -104,6 +104,14 @@ class CorrelationEstimate:
     method: str
 
 
+@dataclass(frozen=True)
+class MeanEstimate:
+    estimate: float
+    ci_low: float
+    ci_high: float
+    sample_count: int
+
+
 def bootstrap_correlation(
     x: np.ndarray,
     y: np.ndarray,
@@ -136,6 +144,79 @@ def bootstrap_correlation(
     alpha = 1 - confidence
     low, high = np.quantile(samples, [alpha / 2, 1 - alpha / 2])
     return CorrelationEstimate(estimate, float(low), float(high), x.size, method)
+
+
+def bootstrap_mean(
+    values: np.ndarray,
+    *,
+    confidence: float = 0.95,
+    resamples: int = 10_000,
+    seed: int = 0,
+) -> MeanEstimate:
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 1 or values.size < 2 or not np.isfinite(values).all():
+        raise ValueError("bootstrap mean requires at least two finite values")
+    if not 0 < confidence < 1 or resamples <= 0:
+        raise ValueError("bootstrap confidence/resamples are invalid")
+    rng = np.random.default_rng(seed)
+    samples = np.mean(
+        values[rng.integers(0, values.size, size=(resamples, values.size))], axis=1
+    )
+    alpha = 1 - confidence
+    low, high = np.quantile(samples, [alpha / 2, 1 - alpha / 2])
+    return MeanEstimate(float(np.mean(values)), float(low), float(high), values.size)
+
+
+def aggregate_seed_metrics(
+    records: Iterable[Any],
+    *,
+    suite: str,
+    condition: str,
+    seeds: Sequence[int],
+    task_count: int = 10,
+    confidence: float = 0.95,
+    resamples: int = 10_000,
+    bootstrap_seed: int = 0,
+) -> tuple[dict[int, dict[str, float]], dict[str, MeanEstimate]]:
+    """Calculate metrics per seed, then bootstrap uncertainty across seeds."""
+
+    from .records import records_to_success_matrix
+
+    requested = tuple(int(value) for value in seeds)
+    if len(requested) < 2 or len(set(requested)) != len(requested):
+        raise ValueError("aggregate reporting requires distinct independent seeds")
+    record_tuple = tuple(records)
+    available = {
+        record.seed
+        for record in record_tuple
+        if record.suite == suite and record.condition == condition
+    }
+    if available != set(requested):
+        raise ValueError(
+            f"record seeds differ from requested seeds: records={sorted(available)}, "
+            f"requested={sorted(requested)}"
+        )
+    per_seed = {}
+    for value in requested:
+        matrix = records_to_success_matrix(
+            record_tuple,
+            suite=suite,
+            seed=value,
+            condition=condition,
+            task_count=task_count,
+        )
+        per_seed[value] = continual_learning_metrics(matrix)
+    names = tuple(next(iter(per_seed.values())))
+    aggregate = {
+        name: bootstrap_mean(
+            np.asarray([per_seed[value][name] for value in requested]),
+            confidence=confidence,
+            resamples=resamples,
+            seed=bootstrap_seed,
+        )
+        for name in names
+    }
+    return per_seed, aggregate
 
 
 def continual_learning_metrics(

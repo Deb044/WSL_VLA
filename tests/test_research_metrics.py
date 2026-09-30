@@ -7,6 +7,7 @@ from wsl_vla.contracts import EvaluationRecord
 from wsl_vla.evaluation.metrics import (
     average_forgetting,
     average_success_rate,
+    aggregate_seed_metrics,
     bootstrap_correlation,
     drift_degradation_correlations,
     forward_transfer,
@@ -83,3 +84,47 @@ def test_drift_correlation_uses_one_sample_per_stage_transition():
     )
     assert result["vision"]["pearson"].sample_count == 6
     assert result["action"]["spearman"].estimate > 0
+
+
+def test_aggregate_metrics_requires_and_reports_all_independent_seeds():
+    records = []
+    for seed, values in ((17, ((8,), (6, 9))), (42, ((7,), (5, 8))), (73, ((9,), (7, 9)))):
+        for stage, row in enumerate(values):
+            for task, successes in enumerate(row):
+                records.append(
+                    EvaluationRecord(
+                        run_id=f"run-{seed}",
+                        suite="suite",
+                        seed=seed,
+                        condition="condition",
+                        training_stage=stage,
+                        evaluated_task_index=task,
+                        evaluated_task_id=f"task-{task}",
+                        rollout_count=10,
+                        successes=successes,
+                        checkpoint_sha256="a" * 64,
+                        latent_drift={name: float(stage) for name in ("vision", "language", "action")},
+                        wall_time_seconds=1.0,
+                        initialization_indices=tuple(range(10)),
+                        rollout_seeds=tuple(range(10)),
+                        evaluation_wall_time_seconds=1.0,
+                    )
+                )
+    per_seed, aggregate = aggregate_seed_metrics(
+        records,
+        suite="suite",
+        condition="condition",
+        seeds=(17, 42, 73),
+        task_count=2,
+        resamples=100,
+    )
+    assert set(per_seed) == {17, 42, 73}
+    assert aggregate["average_success_rate"].sample_count == 3
+    with pytest.raises(ValueError, match="record seeds differ"):
+        aggregate_seed_metrics(
+            records,
+            suite="suite",
+            condition="condition",
+            seeds=(17, 42),
+            task_count=2,
+        )

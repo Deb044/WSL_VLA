@@ -81,7 +81,25 @@ gates, and interpretation rules.
 ## Alignment archive and training
 
 Each population sample directory contains `adapter.npz`, `evidence.npz`, and
-`metadata.json`. Assemble and train with:
+`metadata.json`. Produce real evidence and one three-checkpoint population run
+with:
+
+```bash
+python scripts/extract_research_evidence.py \
+  --data-file data/libero/libero_spatial/task_0.hdf5 \
+  --suite libero_spatial --task-index 0 \
+  --output research_results/evidence/libero_spatial_0.npz
+
+python scripts/train_research_zoo.py \
+  --suite libero_spatial --task-index 0 --seed 17 \
+  --evidence research_results/evidence/libero_spatial_0.npz
+```
+
+The evidence command uses only locked training episodes and records action
+normalization, episode IDs, dataset/base hashes, and the preprocessing hash.
+The zoo trainer updates only official Octo adapter state and saves the three
+configured late checkpoints. After completing the 40-task × three-seed
+population, assemble and train each fold with:
 
 ```bash
 python scripts/build_alignment_archive.py research_results/population \
@@ -94,6 +112,9 @@ python scripts/train_research_alignment.py research_results/alignment/fold.npz \
 
 No test-suite samples are accepted in an alignment archive. Multiple checkpoints
 from the same task share a positive label in contrastive training.
+The resulting alignment directory is independently reloadable: it contains the
+token layout, evidence encoders, auxiliary classifiers, ridge mappers, and
+empirical shells needed for mapped JAX refinement through official Octo loss.
 
 ## Reporting
 

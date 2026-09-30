@@ -67,17 +67,21 @@ Each sample directory must contain:
 Created by `save_packed_adapter` and containing only non-pickled numeric arrays:
 
 - `tokens`, `mask`;
-- `component_ids`, `layer_ids`, `entry_ids`, `row_ids`;
+- `component_ids`, `layer_ids`, `entry_ids`, `row_ids`, `column_offsets`;
 - `factor_down_NNNN`, `factor_up_NNNN` for exact checkpoint reload;
-- UTF-8 JSON bytes for the complete `AdapterSpec`.
+- UTF-8 JSON bytes for the complete `AdapterSpec` and per-sample task, suite,
+  seed, checkpoint stage/fraction, and source dtype metadata.
 
 ### `evidence.npz`
 
 - `vision_features [samples, feature_dim]`: frozen Octo image-tokenizer features;
 - `vision_mask [samples]`;
 - `language_features [feature_dim]`: masked official Octo language features;
-- `action_features [feature_dim]`: normalized mean, standard deviation,
+- `action_statistics [feature_dim]`: normalized mean, standard deviation,
   velocity, and jerk statistics.
+
+The evidence artifact also stores the exact training episode IDs,
+preprocessing version, and raw dataset/base references.
 
 ### `metadata.json`
 
@@ -85,6 +89,13 @@ Required fields are `schema_version`, `task_id`, `suite`, `seed`,
 `checkpoint_fraction`, `base_sha256`, `split`, and `synthetic`. Research assembly
 requires schema 1, `synthetic=false`, one shared base hash, one adapter schema,
 and a split of either `train` or `validation`.
+
+`extract_research_evidence.py` creates evidence from the frozen official Octo
+image and language tokenizers and complete real trajectories.
+`train_research_zoo.py` verifies zero-adapter equivalence, updates adapter state
+through the official diffusion loss with micro-batch accumulation, and saves
+the three locked late checkpoints. Legacy `.pt` zoo commands cannot write
+publication artifacts.
 
 ## 4. Alignment and mapping
 
@@ -99,12 +110,20 @@ jointly optimizes:
 - trainable DeepSets visual evidence;
 - language and action projectors;
 - modality-specific learned temperatures;
-- symmetric multi-positive InfoNCE keyed by task identity.
+- symmetric multi-positive InfoNCE keyed by task identity;
+- auxiliary task classification from every evidence encoder.
+
+Every contrastive batch contains at least two task identities and two adapter
+samples per identity. Optimizer accumulation is not treated as extra negatives.
 
 The best validation checkpoint is used to fit one linear ridge mapper per
 modality. Ridge strength is chosen only on validation tasks. Empirical token
 centres and radii are estimated from training latents and saved beside the
 mapper. The unseen suite is never accepted into these archives.
+The checkpoint includes `token_layout.npz`; `alignment_checkpoint.py` reloads
+the complete system, maps evidence, projects each modality to its empirical
+per-token shell, decodes the combined sequence, and refines it through official
+Octo diffusion loss.
 The reconstruction-only control is trained with the identical command and
 `--contrastive-weight 0`; held-out retrieval and mapper quality must pass
 `alignment_advantage_gate` before the aligned checkpoint advances.

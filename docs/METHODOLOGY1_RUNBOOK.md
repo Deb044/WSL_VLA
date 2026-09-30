@@ -176,6 +176,10 @@ python scripts/report_publication_study.py \
   "$M1_PUB/continual/ten_task_study" \
   --output-json "$M1_PUB/reports/continual_study.json" \
   --output-parquet "$M1_PUB/reports/continual_records.parquet"
+
+python scripts/report_ood_study.py "$M1_PUB/ood" \
+  --output-json "$M1_PUB/reports/ood_study.json" \
+  --output-parquet "$M1_PUB/reports/ood_records.parquet"
 ```
 
 The reporter rejects missing cells, mixed run identities, inconsistent rollout

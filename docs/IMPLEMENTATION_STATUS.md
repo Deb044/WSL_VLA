@@ -17,6 +17,7 @@ official WSL/CUDA experiment has already been executed.
 | Differentiable JAX latent refinement | Implemented | `wsl_vla/alignment/models.py`, `wsl_vla/adapters/latent.py` |
 | Validation-frozen gamma/patience selection | Implemented | `configs/research/gamma_candidates.yaml`, `scripts/run_gamma_validation.py` |
 | OOD five-method protocol | Implemented | `scripts/run_official_ood.py` |
+| Four-fold OOD reporting | Implemented | `scripts/report_ood_study.py` |
 | Shared-state continual protocol and eight controls | Implemented | `scripts/run_official_continual.py` |
 | One-task and two-task scaling gates | Implemented | `scripts/run_one_task_learning_gate.py`, `--task-count 2` |
 | Consecutive component swaps | Implemented | `scripts/run_component_swaps.py` |

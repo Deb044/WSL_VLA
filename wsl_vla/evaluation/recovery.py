@@ -49,6 +49,10 @@ class RecoveryEfficiency:
     def recovered(self) -> bool:
         return self.recovered_at_steps is not None
 
+    @property
+    def eligible(self) -> bool:
+        return self.original_peak_success_rate > 0
+
 
 def recovery_step_schedule(
     original_training_steps: int,
@@ -95,13 +99,17 @@ def recovery_efficiency(
         raise ValueError("recovery curve exceeds the original training budget")
     for point in points:
         _ = point.success_rate
-    recovered_at = next(
-        (
-            point.update_steps
-            for point in points
-            if point.success_rate >= original_peak_success_rate
-        ),
-        None,
+    recovered_at = (
+        next(
+            (
+                point.update_steps
+                for point in points
+                if point.success_rate >= original_peak_success_rate
+            ),
+            None,
+        )
+        if original_peak_success_rate > 0
+        else None
     )
     return RecoveryEfficiency(
         original_peak_success_rate=float(original_peak_success_rate),

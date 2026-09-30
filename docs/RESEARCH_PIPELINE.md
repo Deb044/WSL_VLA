@@ -189,6 +189,26 @@ budgets, or absent conditions. Confidence intervals resample suite folds and
 training seeds as crossed factors. Undefined normalized NBT caused by all-zero
 initial task success is stored as null with an explicit excluded-run count.
 
+Recovery efficiency follows the reference paper rather than the OOD protocol.
+For each consecutive checkpoint pair, the stage `k+1` shared adapter is
+fine-tuned again on task `k` until it regains the success rate achieved when
+task `k` was first learned, or until the original training budget is exhausted:
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+python scripts/run_recovery_probe.py \
+  research_results/continual/ten_task_study/libero_spatial/seed_17/sequential_no_regularization
+```
+
+The fixed curve grid is dense below 10% of the original budget and uses the
+same initialization indices and rollout seeds as the source run. Step zero must
+exactly reproduce the stored post-forgetting evaluation. Unrecovered tasks are
+reported with a null ratio instead of being silently assigned 1.0, and tasks
+whose original peak was zero are marked ineligible. The probe reuses the source
+run's learning rate, batch size, and optimizer accumulation and currently
+accepts LoRA-space continual runs only; latent-space recovery must not be
+misreported as the same optimization protocol.
+
 Gate 3 is executable as:
 
 ```bash

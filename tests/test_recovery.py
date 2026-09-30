@@ -44,3 +44,14 @@ def test_recovery_efficiency_reports_unrecovered_without_fabricating_ratio():
             original_training_steps=100,
             curve=(RecoveryCurvePoint(10, 1, 4),),
         )
+
+
+def test_recovery_efficiency_excludes_tasks_never_learned_initially():
+    result = recovery_efficiency(
+        original_peak_success_rate=0.0,
+        original_training_steps=100,
+        curve=(RecoveryCurvePoint(0, 0, 4),),
+    )
+    assert not result.eligible
+    assert not result.recovered
+    assert result.recovery_step_ratio is None

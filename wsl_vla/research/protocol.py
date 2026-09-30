@@ -62,6 +62,16 @@ def validate_research_config(config: Mapping[str, Any]) -> None:
         raise ValueError("publication model zoo requires three ordered late checkpoints")
     if config.get("model", {}).get("octo_git_revision") is None:
         raise ValueError("Octo git revision must be pinned")
+    alignment = config.get("alignment", {})
+    if int(alignment.get("tasks_per_batch", 0)) < 2:
+        raise ValueError("alignment requires at least two task identities per batch")
+    if int(alignment.get("samples_per_task", 0)) < 2:
+        raise ValueError("alignment requires multiple positives per task in every batch")
+    modality_weights = alignment.get("modality_alignment_weights", {})
+    if set(modality_weights) != {"vision", "language", "action"}:
+        raise ValueError("alignment must define all three modality loss weights")
+    if any(float(value) < 0 for value in modality_weights.values()):
+        raise ValueError("modality alignment weights cannot be negative")
     conditions = set(config.get("continual_learning", {}).get("primary_conditions", []))
     required_conditions = {
         "sequential_no_regularization",

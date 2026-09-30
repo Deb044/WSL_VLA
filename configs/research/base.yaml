@@ -37,7 +37,12 @@ alignment:
   transformer_layers: 3
   attention_heads: 4
   temperature: 0.07
+  tasks_per_batch: 2
+  samples_per_task: 2
+  gradient_accumulation_steps: 8
+  early_stopping_patience: 20
   reconstruction_weight: 1.0
+  auxiliary_classification_weight: 1.0
   modality_alignment_weights:
     vision: 1.0
     language: 1.0

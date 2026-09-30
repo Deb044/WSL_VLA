@@ -200,6 +200,8 @@ if nn is not None:  # pragma: no branch
         heads: int = 4
         max_tokens: int = 8192
         max_layers: int = 64
+        task_count: int = 1
+        initial_temperature: float = 0.07
 
         def setup(self):
             self.weight_autoencoder = PackedWeightAutoencoder(
@@ -226,7 +228,7 @@ if nn is not None:  # pragma: no branch
             self.log_temperatures = {
                 name: self.param(
                     f"log_temperature_{name}",
-                    lambda key: jnp.asarray(np.log(0.07), dtype=jnp.float32),
+                    lambda key: jnp.asarray(np.log(self.initial_temperature), dtype=jnp.float32),
                 )
                 for name in ("vision", "language", "action")
             }
@@ -256,11 +258,15 @@ if nn is not None:  # pragma: no branch
                 "language": self.language_evidence(language_features),
                 "action": self.action_evidence(action_features),
             }
+            task_logits = {
+                name: nn.Dense(self.task_count, name=f"{name}_task_classifier")(embedding)
+                for name, embedding in evidence.items()
+            }
             temperatures = {
                 name: jnp.clip(jnp.exp(value), 0.01, 1.0)
                 for name, value in self.log_temperatures.items()
             }
-            return reconstruction, latents, evidence, temperatures
+            return reconstruction, latents, evidence, temperatures, task_logits
 
         def decode(self, latents, token_mask, component_ids, layer_ids, *, train: bool = False):
             return self.weight_autoencoder.decoder(

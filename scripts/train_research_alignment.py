@@ -19,6 +19,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from wsl_vla.research.mapping import fit_linear_ridge_mapper
+from wsl_vla.research.protocol import load_yaml, validate_research_config
+from wsl_vla.research.sampling import task_balanced_index_batches
 
 
 REQUIRED_ARRAYS = {
@@ -71,6 +73,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--config", default="configs/research/base.yaml")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--latent-dim", type=int, default=128)
@@ -78,16 +81,18 @@ def main() -> int:
     parser.add_argument("--layers", type=int, default=3)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--gradient-accumulation", type=int, default=8)
-    parser.add_argument("--patience", type=int, default=20)
+    parser.add_argument("--tasks-per-batch", type=int)
+    parser.add_argument("--samples-per-task", type=int)
+    parser.add_argument("--gradient-accumulation", type=int)
+    parser.add_argument("--patience", type=int)
     parser.add_argument("--ridge-alphas", default="0.001,0.01,0.1,1,10")
     parser.add_argument(
         "--contrastive-weight",
         type=float,
-        default=1.0,
+        default=None,
         help="Set to zero for the locked reconstruction-only ablation.",
     )
+    parser.add_argument("--classification-weight", type=float)
     args = parser.parse_args()
 
     try:
@@ -106,6 +111,31 @@ def main() -> int:
         multi_positive_info_nce,
     )
 
+    config = load_yaml(args.config)
+    validate_research_config(config)
+    alignment_config = config["alignment"]
+    tasks_per_batch = args.tasks_per_batch or int(alignment_config["tasks_per_batch"])
+    samples_per_task = args.samples_per_task or int(alignment_config["samples_per_task"])
+    gradient_accumulation = args.gradient_accumulation or int(
+        alignment_config["gradient_accumulation_steps"]
+    )
+    patience = args.patience or int(alignment_config["early_stopping_patience"])
+    contrastive_weight = (
+        1.0 if args.contrastive_weight is None else args.contrastive_weight
+    )
+    classification_weight = (
+        float(alignment_config["auxiliary_classification_weight"])
+        if args.classification_weight is None
+        else args.classification_weight
+    )
+    if contrastive_weight == 0:
+        classification_weight = 0.0
+    reconstruction_weight = float(alignment_config["reconstruction_weight"])
+    modality_weights = {
+        name: float(alignment_config["modality_alignment_weights"][name])
+        for name in ("vision", "language", "action")
+    }
+
     data = load_dataset(args.archive)
     archive_path = Path(args.archive)
     archive_manifest_path = archive_path.with_suffix(".manifest.json")
@@ -114,10 +144,10 @@ def main() -> int:
     archive_manifest = json.loads(archive_manifest_path.read_text(encoding="utf-8"))
     if archive_manifest.get("schema_version") != 1 or "adapter_spec" not in archive_manifest:
         raise ValueError("alignment archive manifest has no supported AdapterSpec")
-    if args.batch_size <= 0 or args.gradient_accumulation <= 0 or args.patience <= 0:
-        raise ValueError("batch size, gradient accumulation, and patience must be positive")
-    if args.contrastive_weight < 0:
-        raise ValueError("contrastive weight cannot be negative")
+    if gradient_accumulation <= 0 or patience <= 0:
+        raise ValueError("gradient accumulation and patience must be positive")
+    if contrastive_weight < 0 or classification_weight < 0 or reconstruction_weight <= 0:
+        raise ValueError("alignment loss weights must be non-negative and reconstruction positive")
     train_indices = np.flatnonzero(data["split"] == b"train")
     validation_indices = np.flatnonzero(data["split"] == b"validation")
     token_width = data["tokens"].shape[-1]
@@ -132,12 +162,22 @@ def main() -> int:
         heads=args.heads,
         max_tokens=data["tokens"].shape[1],
         max_layers=int(data["layer_ids"].max()) + 1,
+        task_count=int(data["task_labels"].max()) + 1,
+        initial_temperature=float(alignment_config["temperature"]),
     )
 
     def subset(indices):
         return {name: jnp.asarray(value[indices]) for name, value in data.items() if name != "split"}
 
-    initial_batch = subset(train_indices[: args.batch_size])
+    initial_indices = task_balanced_index_batches(
+        train_indices,
+        data["task_labels"],
+        tasks_per_batch=tasks_per_batch,
+        samples_per_task=samples_per_task,
+        seed=args.seed,
+        shuffle=False,
+    )[0]
+    initial_batch = subset(initial_indices)
 
     def apply_model(params, batch, *, train):
         return model.apply(
@@ -154,7 +194,9 @@ def main() -> int:
         )
 
     def loss_fn(params, batch, *, train):
-        reconstruction, latents, evidence, temperatures = apply_model(params, batch, train=train)
+        reconstruction, latents, evidence, temperatures, task_logits = apply_model(
+            params, batch, train=train
+        )
         loss_reconstruction = masked_reconstruction_loss(
             reconstruction, batch["tokens"], batch["token_mask"]
         )
@@ -169,12 +211,30 @@ def main() -> int:
                 batch["task_labels"],
                 temperature=temperatures[name],
             )
-        total = loss_reconstruction + args.contrastive_weight * sum(losses.values())
+        classification_losses = {
+            name: jnp.mean(
+                optax.softmax_cross_entropy_with_integer_labels(
+                    task_logits[name], batch["task_labels"]
+                )
+            )
+            for name in ("vision", "language", "action")
+        }
+        weighted_alignment = sum(modality_weights[name] * losses[name] for name in losses)
+        total = (
+            reconstruction_weight * loss_reconstruction
+            + contrastive_weight * weighted_alignment
+            # Validation task identities are intentionally unseen. Their
+            # classifier rows receive no training signal, so auxiliary class
+            # loss is a training regularizer rather than an early-stop metric.
+            + (classification_weight if train else 0.0)
+            * sum(classification_losses.values())
+        )
         return total, {
             "reconstruction": loss_reconstruction,
             "vision": losses["vision"],
             "language": losses["language"],
             "action": losses["action"],
+            "classification": sum(classification_losses.values()),
         }
 
     rng = jax.random.PRNGKey(args.seed)
@@ -198,7 +258,7 @@ def main() -> int:
                 optax.clip_by_global_norm(1.0),
                 optax.adamw(args.learning_rate, weight_decay=1e-4),
             ),
-            every_k_schedule=args.gradient_accumulation,
+            every_k_schedule=gradient_accumulation,
         ),
     )
 
@@ -220,11 +280,22 @@ def main() -> int:
     generator = np.random.default_rng(args.seed)
 
     def batches(indices, *, shuffle):
-        ordered = np.asarray(indices).copy()
-        if shuffle:
-            generator.shuffle(ordered)
-        for start in range(0, len(ordered), args.batch_size):
-            yield subset(ordered[start : start + args.batch_size])
+        batch_seed = int(generator.integers(0, 2**31 - 1)) if shuffle else args.seed
+        for selected in task_balanced_index_batches(
+            indices,
+            data["task_labels"],
+            tasks_per_batch=tasks_per_batch,
+            samples_per_task=samples_per_task,
+            seed=batch_seed,
+            shuffle=shuffle,
+        ):
+            yield subset(selected)
+
+    def plain_batches(indices):
+        batch_size = tasks_per_batch * samples_per_task
+        ordered = np.asarray(indices)
+        for start in range(0, len(ordered), batch_size):
+            yield subset(ordered[start : start + batch_size])
 
     def evaluate(params, indices):
         totals = []
@@ -271,14 +342,18 @@ def main() -> int:
                 },
             }
         )
-        if stale_epochs >= args.patience:
+        if stale_epochs >= patience:
             break
 
     def collect_outputs(indices):
         latent_parts = []
         evidence_parts = {name: [] for name in ("vision", "language", "action")}
-        for batch in batches(indices, shuffle=False):
-            _, latents, evidence, _ = jax.device_get(apply_model(best_params, batch, train=False))
+        # Preserve a one-to-one, input-order correspondence for mapper targets.
+        # Contrastive validation batches may wrap samples to preserve positives.
+        for batch in plain_batches(indices):
+            _, latents, evidence, _, _ = jax.device_get(
+                apply_model(best_params, batch, train=False)
+            )
             latent_parts.append(np.asarray(latents))
             for name in evidence_parts:
                 evidence_parts[name].append(np.asarray(evidence[name]))
@@ -346,10 +421,15 @@ def main() -> int:
             "hidden_dim": args.hidden_dim,
             "layers": args.layers,
             "heads": args.heads,
-            "batch_size": args.batch_size,
-            "gradient_accumulation": args.gradient_accumulation,
-            "patience": args.patience,
-            "contrastive_weight": args.contrastive_weight,
+            "tasks_per_batch": tasks_per_batch,
+            "samples_per_task": samples_per_task,
+            "effective_batch_size": tasks_per_batch * samples_per_task,
+            "gradient_accumulation": gradient_accumulation,
+            "patience": patience,
+            "reconstruction_weight": reconstruction_weight,
+            "contrastive_weight": contrastive_weight,
+            "classification_weight": classification_weight,
+            "modality_alignment_weights": modality_weights,
         },
         "history": history,
     }

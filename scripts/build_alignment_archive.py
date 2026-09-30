@@ -79,6 +79,14 @@ def main() -> int:
             raise ValueError("population contains adapters from different base checkpoints")
 
         packed = load_packed_adapter(sample_dir / "adapter.npz")
+        if (
+            packed.metadata.task_id != metadata.get("task_id")
+            or packed.metadata.suite != metadata.get("suite")
+            or packed.metadata.seed != int(metadata.get("seed", -1))
+            or packed.metadata.checkpoint_fraction
+            != float(metadata.get("checkpoint_fraction", -1))
+        ):
+            raise ValueError(f"packed adapter identity differs from sidecar metadata: {sample_dir}")
         spec_digest = hashlib.sha256(
             json.dumps(packed.spec.to_dict(), sort_keys=True).encode()
         ).hexdigest()

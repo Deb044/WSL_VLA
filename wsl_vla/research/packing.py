@@ -13,6 +13,30 @@ from .contracts import AdapterSpec, Component
 
 
 @dataclass(frozen=True)
+class PackedAdapterMetadata:
+    """Sample identity that varies while the shared AdapterSpec stays fixed."""
+
+    task_id: str
+    suite: str
+    seed: int
+    checkpoint_stage: int
+    checkpoint_fraction: float
+    source_dtype: str
+
+    def validate(self) -> None:
+        if not self.task_id or not self.suite:
+            raise ValueError("packed adapter task and suite identities are required")
+        if self.seed < 0 or self.checkpoint_stage < 0:
+            raise ValueError("packed adapter seed and checkpoint stage must be non-negative")
+        if not 0 < self.checkpoint_fraction <= 1:
+            raise ValueError("checkpoint fraction must lie in (0, 1]")
+        try:
+            np.dtype(self.source_dtype)
+        except TypeError as exc:
+            raise ValueError(f"unsupported adapter source dtype: {self.source_dtype}") from exc
+
+
+@dataclass(frozen=True)
 class PackedAdapter:
     """Padded effective-update windows and their non-padding mask."""
 
@@ -22,7 +46,9 @@ class PackedAdapter:
     layer_ids: np.ndarray
     entry_ids: np.ndarray
     row_ids: np.ndarray
+    column_offsets: np.ndarray
     spec: AdapterSpec
+    metadata: PackedAdapterMetadata
     factors: Mapping[str, tuple[np.ndarray, np.ndarray]]
 
     def validate(self) -> None:
@@ -35,6 +61,7 @@ class PackedAdapter:
             ("layer_ids", self.layer_ids),
             ("entry_ids", self.entry_ids),
             ("row_ids", self.row_ids),
+            ("column_offsets", self.column_offsets),
         ):
             if value.shape[0] != n:
                 raise ValueError(f"{name} length does not match tokens")
@@ -42,6 +69,11 @@ class PackedAdapter:
             raise ValueError("mask must have the same shape as tokens")
         if not np.isfinite(self.tokens).all():
             raise ValueError("tokens contain non-finite values")
+        if np.any(self.column_offsets < 0) or np.any(
+            self.column_offsets % self.spec.token_width != 0
+        ):
+            raise ValueError("column offsets must be non-negative token-width multiples")
+        self.metadata.validate()
         expected = {entry.parameter_path for entry in self.spec.entries}
         if set(self.factors) != expected:
             raise ValueError("reloadable factor paths differ from AdapterSpec")
@@ -80,6 +112,8 @@ def effective_update(
 def pack_low_rank_adapter(
     spec: AdapterSpec,
     factors: Mapping[str, tuple[np.ndarray, np.ndarray]],
+    *,
+    metadata: PackedAdapterMetadata,
 ) -> PackedAdapter:
     """Pack all effective updates into fixed-width row windows.
 
@@ -93,6 +127,7 @@ def pack_low_rank_adapter(
     layer_ids: list[int] = []
     entry_ids: list[int] = []
     row_ids: list[int] = []
+    column_offsets: list[int] = []
     component_index = {
         Component.VISION: 0,
         Component.LANGUAGE: 1,
@@ -126,6 +161,7 @@ def pack_low_rank_adapter(
                 layer_ids.append(entry.layer)
                 entry_ids.append(entry_index)
                 row_ids.append(row_index)
+                column_offsets.append(offset)
 
     packed = PackedAdapter(
         tokens=np.stack(tokens),
@@ -134,7 +170,9 @@ def pack_low_rank_adapter(
         layer_ids=np.asarray(layer_ids, dtype=np.int32),
         entry_ids=np.asarray(entry_ids, dtype=np.int32),
         row_ids=np.asarray(row_ids, dtype=np.int32),
+        column_offsets=np.asarray(column_offsets, dtype=np.int32),
         spec=spec,
+        metadata=metadata,
         factors={
             path: (np.asarray(pair[0]).copy(), np.asarray(pair[1]).copy())
             for path, pair in factors.items()
@@ -155,9 +193,11 @@ def unpack_effective_updates(packed: PackedAdapter) -> dict[str, np.ndarray]:
         matrix = np.zeros((entry.input_dim, entry.output_dim), dtype=np.float32)
         for row in range(entry.input_dim):
             chunks = []
-            for _ in range(count_per_row):
+            for chunk_index in range(count_per_row):
                 if packed.entry_ids[cursor] != entry_index or packed.row_ids[cursor] != row:
                     raise ValueError("packed token metadata is not in canonical order")
+                if packed.column_offsets[cursor] != chunk_index * packed.spec.token_width:
+                    raise ValueError("packed token column offsets are not canonical")
                 chunks.append(packed.tokens[cursor][packed.mask[cursor]])
                 cursor += 1
             matrix[row] = np.concatenate(chunks)[: entry.output_dim]
@@ -169,7 +209,18 @@ def unpack_effective_updates(packed: PackedAdapter) -> dict[str, np.ndarray]:
 
 def save_packed_adapter(packed: PackedAdapter, path: str | Path) -> None:
     packed.validate()
-    metadata = json.dumps(packed.spec.to_dict(), sort_keys=True).encode("utf-8")
+    spec_metadata = json.dumps(packed.spec.to_dict(), sort_keys=True).encode("utf-8")
+    sample_metadata = json.dumps(
+        {
+            "task_id": packed.metadata.task_id,
+            "suite": packed.metadata.suite,
+            "seed": packed.metadata.seed,
+            "checkpoint_stage": packed.metadata.checkpoint_stage,
+            "checkpoint_fraction": packed.metadata.checkpoint_fraction,
+            "source_dtype": packed.metadata.source_dtype,
+        },
+        sort_keys=True,
+    ).encode("utf-8")
     factor_arrays = {}
     for index, entry in enumerate(packed.spec.entries):
         down, up = packed.factors[entry.parameter_path]
@@ -183,7 +234,9 @@ def save_packed_adapter(packed: PackedAdapter, path: str | Path) -> None:
         layer_ids=packed.layer_ids,
         entry_ids=packed.entry_ids,
         row_ids=packed.row_ids,
-        adapter_spec_json=np.frombuffer(metadata, dtype=np.uint8),
+        column_offsets=packed.column_offsets,
+        adapter_spec_json=np.frombuffer(spec_metadata, dtype=np.uint8),
+        packed_adapter_metadata_json=np.frombuffer(sample_metadata, dtype=np.uint8),
         **factor_arrays,
     )
 
@@ -192,6 +245,17 @@ def load_packed_adapter(path: str | Path) -> PackedAdapter:
     with np.load(path, allow_pickle=False) as archive:
         spec_payload = json.loads(bytes(archive["adapter_spec_json"]).decode("utf-8"))
         spec = AdapterSpec.from_dict(spec_payload)
+        metadata_payload = json.loads(
+            bytes(archive["packed_adapter_metadata_json"]).decode("utf-8")
+        )
+        metadata = PackedAdapterMetadata(
+            task_id=str(metadata_payload["task_id"]),
+            suite=str(metadata_payload["suite"]),
+            seed=int(metadata_payload["seed"]),
+            checkpoint_stage=int(metadata_payload["checkpoint_stage"]),
+            checkpoint_fraction=float(metadata_payload["checkpoint_fraction"]),
+            source_dtype=str(metadata_payload["source_dtype"]),
+        )
         factors = {
             entry.parameter_path: (
                 archive[f"factor_down_{index:04d}"],
@@ -206,7 +270,9 @@ def load_packed_adapter(path: str | Path) -> PackedAdapter:
             layer_ids=archive["layer_ids"],
             entry_ids=archive["entry_ids"],
             row_ids=archive["row_ids"],
+            column_offsets=archive["column_offsets"],
             spec=spec,
+            metadata=metadata,
             factors=factors,
         )
     packed.validate()

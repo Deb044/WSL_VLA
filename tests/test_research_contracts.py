@@ -9,6 +9,7 @@ from wsl_vla.research.contracts import AdapterEntry, AdapterSpec, Component
 from wsl_vla.research.mapping import fit_linear_ridge_mapper
 from wsl_vla.research.packing import (
     load_packed_adapter,
+    PackedAdapterMetadata,
     pack_low_rank_adapter,
     save_packed_adapter,
     unpack_effective_updates,
@@ -36,6 +37,17 @@ def make_spec() -> AdapterSpec:
     )
 
 
+def make_metadata() -> PackedAdapterMetadata:
+    return PackedAdapterMetadata(
+        task_id="libero_spatial_0",
+        suite="libero_spatial",
+        seed=17,
+        checkpoint_stage=1600,
+        checkpoint_fraction=0.8,
+        source_dtype="float32",
+    )
+
+
 def test_adapter_spec_roundtrip():
     spec = make_spec()
     assert AdapterSpec.from_dict(spec.to_dict()) == spec
@@ -54,8 +66,8 @@ def test_effective_update_packing_is_factor_basis_invariant():
         factors[entry.parameter_path] = (down, up)
         transformed[entry.parameter_path] = (down @ change, inverse @ up)
 
-    packed = pack_low_rank_adapter(spec, factors)
-    repacked = pack_low_rank_adapter(spec, transformed)
+    packed = pack_low_rank_adapter(spec, factors, metadata=make_metadata())
+    repacked = pack_low_rank_adapter(spec, transformed, metadata=make_metadata())
     np.testing.assert_allclose(packed.tokens, repacked.tokens, atol=1e-6)
     reconstructed = unpack_effective_updates(packed)
     for entry in spec.entries:
@@ -66,7 +78,7 @@ def test_effective_update_packing_is_factor_basis_invariant():
 
 def test_packing_rejects_missing_parameter_path():
     with pytest.raises(ValueError, match="factor paths differ"):
-        pack_low_rank_adapter(make_spec(), {})
+        pack_low_rank_adapter(make_spec(), {}, metadata=make_metadata())
 
 
 def test_packed_adapter_roundtrip_preserves_reloadable_factors(tmp_path):
@@ -79,10 +91,12 @@ def test_packed_adapter_roundtrip_preserves_reloadable_factors(tmp_path):
         for entry in spec.entries
     }
     path = tmp_path / "adapter.npz"
-    original = pack_low_rank_adapter(spec, factors)
+    original = pack_low_rank_adapter(spec, factors, metadata=make_metadata())
     save_packed_adapter(original, path)
     restored = load_packed_adapter(path)
     np.testing.assert_array_equal(restored.tokens, original.tokens)
+    np.testing.assert_array_equal(restored.column_offsets, original.column_offsets)
+    assert restored.metadata == original.metadata
     for key in factors:
         np.testing.assert_array_equal(restored.factors[key][0], factors[key][0])
         np.testing.assert_array_equal(restored.factors[key][1], factors[key][1])

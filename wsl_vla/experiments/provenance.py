@@ -26,6 +26,24 @@ def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def sha256_directory(path: str | Path) -> str:
+    """Hash a directory artifact by relative path and file content."""
+
+    root = Path(path)
+    if not root.is_dir():
+        raise NotADirectoryError(f"artifact directory is missing: {root}")
+    files = sorted(item for item in root.rglob("*") if item.is_file())
+    if not files:
+        raise ValueError(f"artifact directory is empty: {root}")
+    digest = hashlib.sha256()
+    for item in files:
+        relative = item.relative_to(root).as_posix()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative.encode("utf-8"))
+        digest.update(bytes.fromhex(sha256_file(item)))
+    return digest.hexdigest()
+
+
 def sha256_array_tree(tree: Mapping[str, Any]) -> str:
     """Hash a flat or nested array tree deterministically."""
 

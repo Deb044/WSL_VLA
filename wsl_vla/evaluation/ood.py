@@ -99,6 +99,53 @@ class OODCandidate(Generic[State]):
 
 CandidateBuilder = Callable[[str, str, int], OODCandidate[State]]
 Rollout = Callable[[State, str, int, int], RolloutOutcome]
+RecordSink = Callable[[OODEvaluationRecord], None]
+
+
+def aggregate_reference_adapters(
+    *,
+    task_ids: Sequence[str],
+    suites: Sequence[str],
+    evidence: Mapping[str, np.ndarray],
+    latents: Mapping[str, np.ndarray],
+    held_out_suite: str,
+) -> OODReferenceBank:
+    """Average repeated zoo checkpoints into one reference per source task."""
+
+    sample_count = len(task_ids)
+    if sample_count == 0 or len(suites) != sample_count:
+        raise ValueError("reference identities must be non-empty and aligned")
+    if set(evidence) != set(MODALITIES) or set(latents) != set(MODALITIES):
+        raise ValueError("reference arrays must contain every modality")
+    if any(np.asarray(values).shape[0] != sample_count for values in (*evidence.values(), *latents.values())):
+        raise ValueError("reference arrays must share the sample dimension")
+    grouped: dict[str, list[int]] = {}
+    task_suite: dict[str, str] = {}
+    for index, (task_id, suite) in enumerate(zip(task_ids, suites)):
+        if suite == held_out_suite:
+            raise ValueError("held-out suite adapters cannot enter the OOD reference bank")
+        if task_id in task_suite and task_suite[task_id] != suite:
+            raise ValueError("one reference task identity appears in multiple suites")
+        task_suite[task_id] = suite
+        grouped.setdefault(task_id, []).append(index)
+    samples = []
+    for task_id in sorted(grouped):
+        indices = np.asarray(grouped[task_id], dtype=np.int64)
+        samples.append(
+            ReferenceAdapter(
+                task_id=task_id,
+                suite=task_suite[task_id],
+                evidence={
+                    name: np.asarray(evidence[name])[indices].mean(axis=0)
+                    for name in MODALITIES
+                },
+                latents={
+                    name: np.asarray(latents[name])[indices].mean(axis=0)
+                    for name in MODALITIES
+                },
+            )
+        )
+    return OODReferenceBank(samples, held_out_suite=held_out_suite)
 
 
 def run_ood_protocol(
@@ -114,6 +161,7 @@ def run_ood_protocol(
     matched_adaptation_steps: int,
     source_training_suites: Sequence[str],
     alignment_checkpoint_sha256: str,
+    record_sink: RecordSink | None = None,
 ) -> tuple[OODEvaluationRecord, ...]:
     """Evaluate all five OOD methods on identical fixed initializations."""
 
@@ -127,6 +175,8 @@ def run_ood_protocol(
         raise ValueError("matched adaptation steps must be positive")
     if held_out_suite in source_training_suites:
         raise ValueError("held-out suite cannot be an OOD training source")
+    if len(source_training_suites) != 3 or len(set(source_training_suites)) != 3:
+        raise ValueError("OOD evaluation requires exactly three distinct source suites")
     records = []
     for task_id, instruction in zip(task_ids, instructions):
         reference_initializations = None
@@ -142,6 +192,11 @@ def run_ood_protocol(
             wall_time = perf_counter() - started
             if not isinstance(outcome, RolloutOutcome):
                 raise TypeError("OOD rollouts must return initialization provenance")
+            if (
+                outcome.checkpoint_sha256 is not None
+                and outcome.checkpoint_sha256 != candidate.checkpoint_sha256
+            ):
+                raise ValueError("OOD rollout policy differs from the recorded candidate")
             if reference_initializations is None:
                 reference_initializations = outcome.initialization_indices
             elif outcome.initialization_indices != reference_initializations:
@@ -167,4 +222,6 @@ def run_ood_protocol(
             )
             _ = record.success_rate
             records.append(record)
+            if record_sink is not None:
+                record_sink(record)
     return tuple(records)

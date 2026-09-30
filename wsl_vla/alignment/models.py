@@ -273,6 +273,13 @@ if nn is not None:  # pragma: no branch
                 latents, token_mask, component_ids, layer_ids, train=train
             )
 
+        def encode_weights(
+            self, tokens, token_mask, component_ids, layer_ids, *, train: bool = False
+        ):
+            return self.weight_autoencoder.encoder(
+                tokens, token_mask, component_ids, layer_ids, train=train
+            )
+
         def encode_evidence(
             self, vision_features, vision_mask, language_features, action_features
         ):

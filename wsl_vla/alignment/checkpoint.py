@@ -125,6 +125,34 @@ def encode_and_map_evidence(
     """Project evidence, predict full modality sequences, and enter the shell."""
 
     _, _, jnp = _research_imports()
+    evidence = encode_evidence_prompts(
+        checkpoint,
+        vision_features=vision_features,
+        vision_mask=vision_mask,
+        language_features=language_features,
+        action_features=action_features,
+    )
+    initial = {}
+    for name in COMPONENT_INDEX:
+        projected = np.asarray(evidence[name])
+        mapped = checkpoint.mappers[name].predict(projected)
+        initial[name] = project_to_empirical_shell(
+            jnp.asarray(mapped), checkpoint.shells[name]
+        )
+    return initial
+
+
+def encode_evidence_prompts(
+    checkpoint: AlignmentCheckpoint,
+    *,
+    vision_features: Any,
+    vision_mask: Any,
+    language_features: Any,
+    action_features: Any,
+) -> dict[str, Any]:
+    """Return trained modality prompt embeddings before the linear mapper."""
+
+    _, _, jnp = _research_imports()
     evidence = checkpoint.model.apply(
         {"params": checkpoint.params},
         jnp.asarray(vision_features)[None],
@@ -133,12 +161,29 @@ def encode_and_map_evidence(
         jnp.asarray(action_features)[None],
         method=checkpoint.model.encode_evidence,
     )
-    initial = {}
-    for name in COMPONENT_INDEX:
-        projected = np.asarray(evidence[name][0])
-        mapped = checkpoint.mappers[name].predict(projected)
-        initial[name] = project_to_empirical_shell(jnp.asarray(mapped), checkpoint.shells[name])
-    return initial
+    return {name: evidence[name][0] for name in COMPONENT_INDEX}
+
+
+def encode_weight_tokens(
+    checkpoint: AlignmentCheckpoint,
+    *,
+    tokens: Any,
+    token_mask: Any,
+    component_ids: Any,
+    layer_ids: Any,
+):
+    """Encode packed effective updates using the checkpoint's trained encoder."""
+
+    _, _, jnp = _research_imports()
+    return checkpoint.model.apply(
+        {"params": checkpoint.params},
+        jnp.asarray(tokens),
+        jnp.asarray(token_mask),
+        jnp.asarray(component_ids),
+        jnp.asarray(layer_ids),
+        train=False,
+        method=checkpoint.model.encode_weights,
+    )
 
 
 def compose_latent_sequence(

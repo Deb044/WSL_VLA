@@ -10,6 +10,7 @@ from wsl_vla.evaluation.ood import (
     OODCandidate,
     OODReferenceBank,
     ReferenceAdapter,
+    aggregate_reference_adapters,
     run_ood_protocol,
 )
 from wsl_vla.evaluation.sequential import RolloutOutcome
@@ -41,6 +42,27 @@ def test_reference_bank_excludes_test_suite_and_provides_real_baselines():
         )
 
 
+def test_repeated_zoo_samples_are_aggregated_per_source_task():
+    evidence = {
+        name: np.asarray([[1.0], [3.0], [7.0]])
+        for name in ("vision", "language", "action")
+    }
+    latents = {
+        name: np.asarray([[[1.0]], [[3.0]], [[7.0]]])
+        for name in ("vision", "language", "action")
+    }
+    bank = aggregate_reference_adapters(
+        task_ids=("a", "a", "b"),
+        suites=("libero_spatial", "libero_spatial", "libero_goal"),
+        evidence=evidence,
+        latents=latents,
+        held_out_suite="libero_10",
+    )
+    assert tuple(sample.task_id for sample in bank.samples) == ("a", "b")
+    assert bank.samples[0].evidence["vision"] == pytest.approx([2.0])
+    assert np.allclose(bank.samples[0].latents["action"], [[2.0]])
+
+
 def test_ood_protocol_enforces_matched_steps_and_identical_initializations():
     builders = {}
     for method in OOD_METHODS:
@@ -69,6 +91,30 @@ def test_ood_protocol_enforces_matched_steps_and_identical_initializations():
     )
     assert tuple(record.method for record in records) == OOD_METHODS
     assert all(record.initialization_indices == (0, 1, 2) for record in records)
+
+    mismatch = dict(builders)
+    mismatch["mapped_zero_shot"] = lambda task, instruction, seed: OODCandidate(
+        state="mapped_zero_shot", checkpoint_sha256="c" * 64, adaptation_steps=0
+    )
+    with pytest.raises(ValueError, match="rollout policy differs"):
+        run_ood_protocol(
+            task_ids=("libero_10_0",),
+            instructions=("task",),
+            candidate_builders=mismatch,
+            rollout=lambda state, task_id, count, seed: RolloutOutcome(
+                1,
+                tuple(range(count)),
+                tuple(seed + i for i in range(count)),
+                hashlib.sha256(state.encode()).hexdigest(),
+            ),
+            run_id="run",
+            held_out_suite="libero_10",
+            seed=17,
+            rollout_count=3,
+            matched_adaptation_steps=20,
+            source_training_suites=("libero_spatial", "libero_object", "libero_goal"),
+            alignment_checkpoint_sha256="a" * 64,
+        )
 
     broken = dict(builders)
     broken["mapped_weight_finetune"] = lambda task, instruction, seed: OODCandidate(

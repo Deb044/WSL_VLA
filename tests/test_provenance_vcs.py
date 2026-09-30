@@ -37,3 +37,17 @@ def test_vcs_revision_rejects_non_vcs_install(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="invalid direct_url"):
         provenance.installed_vcs_commit("libero")
+
+
+def test_directory_digest_is_order_independent_and_path_sensitive(tmp_path):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    (left / "a").write_bytes(b"one")
+    (left / "b").write_bytes(b"two")
+    (right / "b").write_bytes(b"two")
+    (right / "a").write_bytes(b"one")
+    assert provenance.sha256_directory(left) == provenance.sha256_directory(right)
+    (right / "a").rename(right / "c")
+    assert provenance.sha256_directory(left) != provenance.sha256_directory(right)

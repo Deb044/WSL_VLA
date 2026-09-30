@@ -13,20 +13,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.data import (
+from data.dataset import (
     StrictLiberoHDF5,
     forbid_synthetic_research_output,
     load_suite_manifest,
 )
-from wsl_vla.research.octo_bridge import OCTO_GIT_REVISION
-from wsl_vla.research.protocol import (
+from models.octo_model import OCTO_GIT_REVISION
+from core.protocol import (
     expand_population_runs,
     load_yaml,
     publication_folds,
     validate_reference_tasks,
     validate_research_config,
 )
-from wsl_vla.research.provenance import capture_environment, capture_hardware, sha256_file
+from core.provenance import capture_environment, capture_hardware, sha256_file
 
 
 RESEARCH_MODULES = ("jax", "flax", "optax", "octo", "h5py", "yaml")
@@ -35,7 +35,7 @@ RESEARCH_DISTRIBUTIONS = ("jax", "flax", "optax", "octo", "h5py", "PyYAML")
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/research/base.yaml")
+    parser.add_argument("--config", default="configs/base.yaml")
     parser.add_argument("--tasks", default="configs/reference_tasks.yaml")
     parser.add_argument("--data-root", default=None)
     parser.add_argument("--base-checkpoint", default=None)
@@ -66,7 +66,11 @@ def main() -> int:
     if os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE", "").lower() not in {"false", "0"}:
         problems.append("set XLA_PYTHON_CLIENT_PREALLOCATE=false for the <=8 GB profile")
 
-    data_root = Path(args.data_root or config["data"]["root"])
+    raw_data_root = Path(args.data_root or config["data"]["root"])
+    if not raw_data_root.exists() and (Path(__file__).resolve().parents[1] / raw_data_root).exists():
+        data_root = Path(__file__).resolve().parents[1] / raw_data_root
+    else:
+        data_root = raw_data_root
     indexed_files = []
     for suite in tasks["suites"]:
         suite_dir = data_root / suite

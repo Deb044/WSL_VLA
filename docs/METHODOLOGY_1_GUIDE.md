@@ -46,43 +46,40 @@ Fragile vision and language backbone components are constrained more tightly to 
 
 ### 2.1 Unit Tests
 ```bash
-python tests/test_methodology1.py
+pytest tests/
 ```
-Validates autoencoder encoding/decoding, bidirectional InfoNCE gradients, hyperspherical projection radius, and differential regularizer backward passes.
+Executes the comprehensive 24-test suite validating contract schemas, packing basis invariance, episode splitting, action statistics, JAX latent optimization, and continual learning metrics.
 
-### 2.2 Alignment Training
+### 2.2 Model Zoo & Alignment Pipeline
+1. **Preflight Verification**:
+   ```bash
+   python scripts/preflight.py
+   ```
+2. **Zero-Adapter Equivalence Check**:
+   ```bash
+   python scripts/verify_octo.py
+   ```
+3. **Train Task Modality Adapters**:
+   ```bash
+   python scripts/train_zoo.py --suite libero_spatial
+   ```
+4. **Build Alignment Archive**:
+   ```bash
+   python scripts/build_alignment_archive.py research_results/population --held-out-suite libero_spatial --output research_results/archive_fold0.npz
+   ```
+5. **Train Weight Autoencoder & InfoNCE Alignment**:
+   ```bash
+   python scripts/train_alignment.py research_results/archive_fold0.npz --output research_results/checkpoints/alignment_fold0
+   ```
+
+### 2.3 Sequential Continual Adaptation
 ```bash
-python scripts/train_alignment.py --checkpoint_dir ./checkpoints/model_zoo --epochs 100
+python scripts/run_continual.py --suite libero_spatial --condition proposed_asymmetric --seed 42
 ```
-Saves the aligned representation to `./checkpoints/weight_alignment/aligned_weight_autoencoder.pt`.
+Trains one evolving policy across sequential task stages under locked regularizations (unregularized, uniform, and proposed asymmetric differential regularization), evaluating the policy at each stage on all seen tasks.
 
-### 2.3 Sequential Adaptation (Continual Learning)
+### 2.4 Compute Continual Learning Publication Metrics
 ```bash
-python scripts/sequential_adaptation.py --schedule fixed --gamma_vis 1.0 --gamma_lang 1.0 --gamma_act 0.2
+python scripts/report_metrics.py research_results/records/eval_records.jsonl --suite libero_spatial --seed 42 --condition proposed_asymmetric
 ```
-
-Available schedules:
-- `--schedule fixed`: Fixed ratio grid search.
-- `--schedule drift_informed`: $\gamma_m$ proportional to historical drift sensitivity.
-- `--schedule adaptive`: Online live drift tracking in latent space.
-
-### 2.4 Policy Evaluation
-```bash
-python scripts/evaluate_vla.py --suite libero_spatial
-```
-Computes Behavioral Cloning MSE, Cartesian translation RMSE, rotation RMSE, directional cosine similarity, and gripper accuracy across all trained tasks.
-
-### 2.5 Head-to-Head Base vs. Adapted Benchmark
-```bash
-python scripts/compare_base_vs_adapted.py
-```
-Directly measures the empirical performance gap between the unadapted Base VLA and the VLA injected with task-specific factorized weight adapters, validating trajectory error reduction, heading alignment, and gripper precision.
-
-### 2.6 Research-Level Continual Learning Benchmark Suite
-```bash
-python scripts/run_research_benchmark.py --condition all
-```
-Executes the comprehensive continual learning evaluation protocol:
-- Measures the Pearson correlation $r(\text{Latent Drift}, \text{Behavioral Forgetting})$ across visual ($r_{\text{vis}}$), linguistic ($r_{\text{lang}}$), and motor ($r_{\text{act}}$) sub-spaces.
-- Evaluates the 4-way differential regularization ablation suite (Proposed vs. Uniform vs. Direction-Inverted vs. Drift-Informed).
-- Computes Normalized Backward Transfer (NBT) and per-task kilobyte footprint.
+Computes Average Success Rate (ASR), Negative Backward Transfer (NBT), Normalized NBT, Average Forgetting, Forward Transfer, and bootstrap confidence intervals.

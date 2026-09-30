@@ -9,7 +9,7 @@ from typing import Iterable
 
 import numpy as np
 
-from .contracts import EvaluationRecord
+from core.contracts import EvaluationRecord, OODEvaluationRecord
 
 
 def append_evaluation_record(record: EvaluationRecord, path: str | Path) -> None:
@@ -32,6 +32,31 @@ def load_evaluation_records(path: str | Path) -> tuple[EvaluationRecord, ...]:
                 records.append(EvaluationRecord(**json.loads(line)))
             except Exception as exc:
                 raise ValueError(f"invalid evaluation record on line {line_number}") from exc
+    return tuple(records)
+
+
+def append_ood_evaluation_record(record: OODEvaluationRecord, path: str | Path) -> None:
+    """Persist an out-of-distribution evaluation record."""
+    _ = record.success_rate
+    if len(record.checkpoint_sha256) != 64:
+        raise ValueError("checkpoint_sha256 must be a SHA-256 hex digest")
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(asdict(record), sort_keys=True) + "\n")
+
+
+def load_ood_evaluation_records(path: str | Path) -> tuple[OODEvaluationRecord, ...]:
+    """Load persisted out-of-distribution evaluation records."""
+    records = []
+    with Path(path).open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            if not line.strip():
+                continue
+            try:
+                records.append(OODEvaluationRecord(**json.loads(line)))
+            except Exception as exc:
+                raise ValueError(f"invalid OOD evaluation record on line {line_number}") from exc
     return tuple(records)
 
 

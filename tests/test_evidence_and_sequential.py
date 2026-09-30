@@ -3,8 +3,8 @@ import hashlib
 import numpy as np
 import pytest
 
-from wsl_vla.research.evidence import masked_action_statistics, pad_feature_set
-from wsl_vla.research.sequential import StageUpdate, run_sequential_protocol
+from models.evidence_extractor import masked_action_statistics, pad_feature_set
+from core.sequential import StageUpdate, run_sequential_protocol
 
 
 def test_action_statistics_respect_episode_boundaries_and_masks():

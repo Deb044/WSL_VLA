@@ -10,10 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.contracts import RunManifest
-from wsl_vla.research.data import load_suite_manifest
-from wsl_vla.research.protocol import load_yaml, validate_reference_tasks, validate_research_config
-from wsl_vla.research.provenance import (
+from core.contracts import RunManifest
+from data.dataset import load_suite_manifest
+from core.protocol import load_yaml, validate_reference_tasks, validate_research_config
+from core.provenance import (
     capture_environment,
     capture_hardware,
     git_state,
@@ -26,7 +26,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--base-sha256", required=True)
-    parser.add_argument("--config", default="configs/research/base.yaml")
+    parser.add_argument("--config", default="configs/base.yaml")
     parser.add_argument("--tasks", default="configs/reference_tasks.yaml")
     parser.add_argument("--suite", required=True)
     parser.add_argument("--data-root")

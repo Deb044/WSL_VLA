@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from wsl_vla.research.component_analysis import component_drift, swap_effective_updates
-from wsl_vla.research.contracts import AdapterEntry, AdapterSpec, Component
+from models.component_analysis import component_drift, swap_effective_updates
+from core.contracts import AdapterEntry, AdapterSpec, Component
 
 
 def _spec():

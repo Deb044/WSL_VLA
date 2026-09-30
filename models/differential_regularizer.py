@@ -1,124 +1,133 @@
 """
 models/differential_regularizer.py
 
-Implements Section 1.3 of Methodology:
-Differential Regularization During Sequential Adaptation.
-
-Constrains fragile vision and language components more tightly than robust action components:
-    gamma_vis, gamma_lang > gamma_act
-
-Formulation:
-    L_ref(Z) = L_task(h_psi(Z)) + sum_m gamma_m * || Pi_shell(Z_m) - Z_m^(0) ||_F^2
-where:
-    Pi_shell(Z) = R * Z / ||Z||_F (Hyperspherical-shell projection)
+Differential Regularization During Sequential Continual Adaptation.
+Enforces modality-asymmetric constraints: gamma_vis, gamma_lang > gamma_act
+to protect fragile cognitive features while maintaining motor plasticity.
+Constrains latents to the empirical hyperspherical shell (Pi_shell).
 """
-from typing import Dict, Tuple, Optional
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping
+
+from models.weight_autoencoder import require_jax
+
+try:
+    import jax
+    import jax.numpy as jnp
+except ImportError:
+    jax = None
+    jnp = None
 
 
-def hyperspherical_shell_projection(z: torch.Tensor, radius: float = 1.0) -> torch.Tensor:
-    """
-    Pi_shell(Z) = R * Z / ||Z||_F
-    Projects latent tensor Z onto the hyperspherical shell of radius R.
-    """
-    frobenius_norm = torch.norm(z, p="fro", dim=(-2, -1), keepdim=True) + 1e-8
-    return radius * (z / frobenius_norm)
+@dataclass(frozen=True)
+class EmpiricalShell:
+    """Frobenius hyperspherical shell defined by empirical center and radius."""
+    center: Any
+    radius: Any
 
 
-class DifferentialRegularizer(nn.Module):
-    """
-    Applies modality-asymmetric regularization during latent-space refinement:
-      - gamma_vis:  Regularization coefficient for vision sub-modules
-      - gamma_lang: Regularization coefficient for language sub-modules
-      - gamma_act:  Regularization coefficient for action sub-modules
-    Satisfies: gamma_vis, gamma_lang > gamma_act
-    """
-    def __init__(
-        self,
-        schedule: str = "fixed",
-        gamma_vis: float = 1.0,
-        gamma_lang: float = 1.0,
-        gamma_act: float = 0.2,
-        shell_radius: float = 1.0,
-    ):
-        super().__init__()
-        self.schedule = schedule.lower()
-        self.gamma_vis = gamma_vis
-        self.gamma_lang = gamma_lang
-        self.gamma_act = gamma_act
-        self.shell_radius = shell_radius
+def estimate_empirical_shell(latents, valid_mask) -> EmpiricalShell:
+    """Compute empirical center and mean radius of valid latent points."""
+    require_jax()
+    weights = valid_mask.astype(latents.dtype)[..., None]
+    count = jnp.maximum(jnp.sum(weights, axis=0), 1)
+    center = jnp.sum(latents * weights, axis=0) / count
+    distances = jnp.linalg.norm(latents - center[None], axis=-1)
+    radius = jnp.sum(distances * valid_mask, axis=0) / jnp.maximum(
+        jnp.sum(valid_mask, axis=0), 1
+    )
+    return EmpiricalShell(center=center, radius=jnp.maximum(radius, 1e-6))
 
-        # Internal tracking for drift-informed and online adaptive schedules
-        self.running_drifts = {"vis": 0.0, "lang": 0.0, "act": 0.0}
 
-    def get_gammas(self) -> Dict[str, float]:
-        """Returns active gamma regularization weights for each modality."""
-        if self.schedule == "fixed":
-            return {
-                "vis": self.gamma_vis,
-                "lang": self.gamma_lang,
-                "act": self.gamma_act,
-            }
-        elif self.schedule == "drift_informed":
-            # Proportional to drift sensitivity: boost fragile components if drift is detected
-            v_mult = 1.0 + min(self.running_drifts["vis"] * 2.0, 3.0)
-            l_mult = 1.0 + min(self.running_drifts["lang"] * 2.0, 3.0)
-            a_mult = 1.0 + min(self.running_drifts["act"] * 0.5, 1.5)
-            return {
-                "vis": self.gamma_vis * v_mult,
-                "lang": self.gamma_lang * l_mult,
-                "act": self.gamma_act * a_mult,
-            }
-        elif self.schedule == "adaptive":
-            # Live drift re-scaling (EWC-like in latent space)
-            total_d = sum(self.running_drifts.values()) + 1e-6
-            w_v = (self.running_drifts["vis"] / total_d) * 3.0
-            w_l = (self.running_drifts["lang"] / total_d) * 3.0
-            w_a = (self.running_drifts["act"] / total_d) * 1.0
-            return {
-                "vis": max(self.gamma_vis, w_v),
-                "lang": max(self.gamma_lang, w_l),
-                "act": min(self.gamma_act, max(0.05, w_a)),
-            }
-        else:
-            raise ValueError(f"Unknown schedule: {self.schedule}")
+def project_to_empirical_shell(latents, shell: EmpiricalShell):
+    """Project latents onto the empirical shell: Pi_shell(z) = center + R * (z - center)/||z - center||."""
+    require_jax()
+    offset = latents - shell.center
+    norm = jnp.linalg.norm(offset, axis=-1, keepdims=True)
+    fallback = jnp.zeros_like(offset).at[..., 0].set(1)
+    direction = jnp.where(norm > 1e-8, offset / jnp.maximum(norm, 1e-8), fallback)
+    return shell.center + shell.radius[..., None] * direction
 
-    def update_drift(self, z_current: Dict[str, torch.Tensor], z_initial: Dict[str, torch.Tensor]):
-        """Updates drift statistics for adaptive schedules."""
-        with torch.no_grad():
-            for m in ["vis", "lang", "act"]:
-                if m in z_current and m in z_initial:
-                    drift_val = torch.norm(z_current[m] - z_initial[m], p=2).item()
-                    self.running_drifts[m] = 0.8 * self.running_drifts[m] + 0.2 * drift_val
 
-    def compute_regularization_loss(
-        self,
-        z_current: Dict[str, torch.Tensor],
-        z_initial: Dict[str, torch.Tensor],
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        L_reg = sum_m gamma_m * || Pi_shell(Z_m) - Z_m^(0) ||_F^2
-        """
-        gammas = self.get_gammas()
-        loss_reg = torch.tensor(0.0, device=z_current["vis"].device)
-        modal_losses = {}
+def differential_local_penalty(
+    current: Mapping[str, Any],
+    previous: Mapping[str, Any],
+    gammas: Mapping[str, float],
+):
+    """Asymmetric quadratic penalty: sum_m gamma_m ||z_m^(t) - z_m^(t-1)||^2."""
+    require_jax()
+    expected = {"vision", "language", "action"}
+    if set(current) != expected or set(previous) != expected or set(gammas) != expected:
+        raise ValueError("current, previous, and gammas must contain all three modalities")
+    return sum(
+        gammas[name] * jnp.sum(jnp.square(current[name] - previous[name]))
+        for name in sorted(expected)
+    )
 
-        for m in ["vis", "lang", "act"]:
-            z_m = z_current[m]
-            z0_m = z_initial[m]
 
-            # Hyperspherical shell projection
-            z_proj = hyperspherical_shell_projection(z_m, radius=self.shell_radius)
-            z0_proj = hyperspherical_shell_projection(z0_m, radius=self.shell_radius)
+def assert_task_loss_gradients(
+    latents: Mapping[str, Any],
+    *,
+    task_loss: Callable[[Mapping[str, Any]], Any],
+    minimum_norm: float = 1e-12,
+):
+    """Hard gate: task loss gradients must reach every modality latent."""
+    require_jax()
+    gradients = jax.grad(task_loss)(latents)
+    for name in ("vision", "language", "action"):
+        if name not in gradients:
+            raise AssertionError(f"task loss has no {name} latent gradient")
+        value = gradients[name]
+        if not bool(jnp.all(jnp.isfinite(value))):
+            raise AssertionError(f"task loss has non-finite {name} gradients")
+        if float(jnp.linalg.norm(value)) <= minimum_norm:
+            raise AssertionError(f"task loss is detached from {name} latents")
+    return gradients
 
-            # Frobenius norm distance
-            dist_f = torch.sum((z_proj - z0_proj) ** 2)
-            weighted_dist = gammas[m] * dist_f
 
-            loss_reg = loss_reg + weighted_dist
-            modal_losses[f"reg_{m}"] = weighted_dist.item()
-            modal_losses[f"gamma_{m}"] = gammas[m]
+def refine_latents(
+    initial: Mapping[str, Any],
+    *,
+    task_loss: Callable[[Mapping[str, Any], Any], Any],
+    batches: list[Any],
+    gammas: Mapping[str, float],
+    steps: int,
+    learning_rate: float,
+):
+    """Differentiate task loss through decoder and Octo adapter application."""
+    require_jax()
+    if steps <= 0 or not batches:
+        raise ValueError("refinement requires positive steps and at least one batch")
+    current = {name: jnp.asarray(value) for name, value in initial.items()}
+    previous = {name: jax.lax.stop_gradient(value) for name, value in current.items()}
 
-        return loss_reg, modal_losses
+    def objective(values, batch):
+        task = task_loss(values, batch)
+        regularizer = differential_local_penalty(values, previous, gammas)
+        return task + regularizer, {"task_loss": task, "regularizer": regularizer}
+
+    history = []
+    for step in range(steps):
+        (loss, auxiliary), gradients = jax.value_and_grad(objective, has_aux=True)(
+            current, batches[step % len(batches)]
+        )
+        current = jax.tree_util.tree_map(
+            lambda value, gradient: value - learning_rate * gradient,
+            current,
+            gradients,
+        )
+        history.append({"loss": loss, **auxiliary})
+    return current, history
+
+
+__all__ = [
+    "EmpiricalShell",
+    "assert_task_loss_gradients",
+    "differential_local_penalty",
+    "estimate_empirical_shell",
+    "project_to_empirical_shell",
+    "refine_latents",
+    "require_jax",
+]

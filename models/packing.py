@@ -9,7 +9,7 @@ from typing import Mapping
 
 import numpy as np
 
-from .contracts import AdapterSpec, Component
+from core.contracts import AdapterSpec, Component
 
 
 @dataclass(frozen=True)

@@ -1,32 +1,34 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Environment Installation & Setup Script for VLA Model Zoo
+# WSL_VLA: Automated Environment Installation & Setup Script (Linux / WSL2)
 # ==============================================================================
 set -euo pipefail
 
 ENV_NAME="vla_zoo"
 
 echo "======================================================================"
-echo " Step 1: Configuring Headless Rendering Variables"
+echo " Step 1: Configuring Environment & Headless Rendering Variables"
 echo "======================================================================"
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-# Persist to ~/.bashrc if not already present
-if ! grep -q "export MUJOCO_GL=egl" ~/.bashrc 2>/dev/null; then
-    echo "export MUJOCO_GL=egl" >> ~/.bashrc
-    echo "export PYOPENGL_PLATFORM=egl" >> ~/.bashrc
-    echo "  -> Appended MUJOCO_GL=egl to ~/.bashrc"
-fi
+# Persist environment variables to ~/.bashrc if not already present
+for VAR in "export MUJOCO_GL=egl" "export PYOPENGL_PLATFORM=egl" "export XLA_PYTHON_CLIENT_PREALLOCATE=false"; do
+    if ! grep -Fxq "$VAR" ~/.bashrc 2>/dev/null; then
+        echo "$VAR" >> ~/.bashrc
+        echo "  -> Appended to ~/.bashrc: $VAR"
+    fi
+done
 
 echo "======================================================================"
-echo " Step 2: Creating Conda Environment (${ENV_NAME})"
+echo " Step 2: Locating Conda & Setting up Environment (${ENV_NAME})"
 echo "======================================================================"
 # Locate conda initialization script
-if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    source "$HOME/miniconda3/etc/profile.d/conda.sh"
-elif [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then
+if [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then
     source "$HOME/miniforge3/etc/profile.d/conda.sh"
+elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
 elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
     source "$HOME/anaconda3/etc/profile.d/conda.sh"
 elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
@@ -34,7 +36,8 @@ elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then
 elif command -v conda &> /dev/null; then
     eval "$(conda shell.bash hook)"
 else
-    echo "Error: conda not found. Please install Miniconda or Anaconda first."
+    echo "Error: conda not found. Please install Miniforge or Miniconda first:"
+    echo "  https://github.com/conda-forge/miniforge"
     exit 1
 fi
 
@@ -48,43 +51,57 @@ fi
 conda activate "${ENV_NAME}"
 
 echo "======================================================================"
-echo " Step 3: Installing PyTorch & CUDA Dependencies"
+echo " Step 3: Installing JAX, Flax & Hardware Acceleration"
 echo "======================================================================"
 pip install --upgrade pip setuptools wheel
 
 if command -v nvidia-smi &> /dev/null; then
-    echo "  -> NVIDIA GPU detected! Installing PyTorch with CUDA 12.1..."
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+    echo "  -> NVIDIA GPU detected via nvidia-smi!"
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
+    echo "  -> Installing JAX with CUDA 12 support..."
+    pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html || {
+        echo "  -> CUDA 12 pip fallback to standard JAX..."
+        pip install jax jaxlib
+    }
 else
-    echo "  -> No NVIDIA GPU detected. Installing PyTorch CPU version..."
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    echo "  -> No NVIDIA GPU detected. Installing standard CPU JAX..."
+    pip install jax jaxlib
 fi
 
 echo "======================================================================"
-echo " Step 4: Installing Core Model, Simulation & Evidence Packages"
+echo " Step 4: Installing Core Model, Simulation & Pipeline Packages"
 echo "======================================================================"
 pip install -r requirements.txt
+pip install -e .
 
 echo "======================================================================"
-echo " Step 5: Verification Check"
+echo " Step 5: Running System Verification & Test Suite"
 echo "======================================================================"
 python -c "
-import torch
-import peft
+import jax
+import flax
+import optax
 import h5py
-import mujoco
-import sentence_transformers
+import numpy as np
+import core
+import data
+import models
 
-print('--- Verification Summary ---')
-print('PyTorch Version :', torch.__version__)
-print('CUDA Available  :', torch.cuda.is_available())
-if torch.cuda.is_available():
-    print('GPU Device      :', torch.cuda.get_device_name(0))
-print('PEFT Version    :', peft.__version__)
-print('MuJoCo Version  :', mujoco.__version__)
-print('Setup completed successfully!')
+print('--- Environment Verification ---')
+print('Python Version  :', np.__version__)
+print('JAX Version     :', jax.__version__)
+print('JAX Default Dev :', jax.default_backend())
+print('JAX Devices     :', jax.devices())
+print('Flax Version    :', flax.__version__)
+print('Optax Version   :', optax.__version__)
+print('HDF5 Version    :', h5py.__version__)
+print('WSL_VLA Package : OK')
 "
 
+echo "Running pytest test suite..."
+pytest tests/
+
 echo "======================================================================"
-echo " Done! Activate the environment with: conda activate ${ENV_NAME}"
+echo " Setup Completed Successfully!"
+echo " Activate your environment with: conda activate ${ENV_NAME}"
 echo "======================================================================"

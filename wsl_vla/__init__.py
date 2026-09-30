@@ -1,13 +1,10 @@
-"""Research-grade Methodology 1 implementation.
+"""WSL-VLA: Modality-Aligned Weight-Space Learning for Continual Robot Policies."""
 
-The legacy ``models`` and ``scripts`` packages are retained for CPU smoke tests.
-Publication experiments must import from :mod:`wsl_vla.research`.
-"""
-
-from .research.contracts import (
+from core.contracts import (
     AdapterEntry,
     AdapterSpec,
     AlignmentCheckpointMetadata,
+    Component,
     EvaluationRecord,
     RunManifest,
     TaskEvidence,
@@ -17,6 +14,7 @@ __all__ = [
     "AdapterEntry",
     "AdapterSpec",
     "AlignmentCheckpointMetadata",
+    "Component",
     "EvaluationRecord",
     "RunManifest",
     "TaskEvidence",

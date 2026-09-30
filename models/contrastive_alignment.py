@@ -1,191 +1,194 @@
 """
 models/contrastive_alignment.py
 
-Implements Section 1.2 of Methodology:
-Modality-Specific Contrastive Alignment.
-
-Aligns component-factorized weight latents Z_m in R^[L, d_latent] against
-modality-specific prompt evidence e_m:
-  - e_vis:  DeepSets demonstration frames embedding [128]
-  - e_lang: Natural language instruction sentence embedding [384]
-  - e_act:  Action-chunk distribution summary statistics [28]
-
-Features:
-  1. Learnable temperature parameters tau_m per modality.
-  2. Independent bidirectional InfoNCE alignment loss per modality across layer tokens.
-  3. Auxiliary task classification heads on prompt embeddings for supervision.
+Modality-Specific InfoNCE Contrastive Aligner and joint AlignmentSystem.
+Aligns multi-modal task evidence with adapter weight latents using learnable temperature scales.
 """
-from typing import Dict, Tuple, Optional
-import math
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+from models.weight_autoencoder import (
+    PackedWeightAutoencoder,
+    require_jax,
+)
+
+try:
+    import flax.linen as nn
+    import jax
+    import jax.numpy as jnp
+except ImportError:
+    nn = None
+    jax = None
+    jnp = None
 
 
-class PromptProjector(nn.Module):
-    """Projects task evidence e_m to the shared latent dimension d_latent."""
-    def __init__(self, in_dim: int, d_latent: int = 128):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, d_latent * 2),
-            nn.LayerNorm(d_latent * 2),
-            nn.GELU(),
-            nn.Linear(d_latent * 2, d_latent),
-            nn.LayerNorm(d_latent),
-        )
+if nn is not None:
 
-    def forward(self, e: torch.Tensor) -> torch.Tensor:
-        return self.net(e)
+    class EvidenceProjector(nn.Module):
+        latent_dim: int = 128
+
+        @nn.compact
+        def __call__(self, evidence):
+            x = nn.Dense(self.latent_dim * 2)(evidence)
+            x = nn.gelu(x)
+            x = nn.Dense(self.latent_dim)(x)
+            return nn.LayerNorm()(x)
+
+    class DeepSetsEvidenceEncoder(nn.Module):
+        output_dim: int = 128
+        hidden_dim: int = 256
+
+        @nn.compact
+        def __call__(self, features, mask):
+            x = nn.Dense(self.hidden_dim)(features)
+            x = nn.gelu(x)
+            x = nn.Dense(self.hidden_dim)(x)
+            mask_f = mask.astype(x.dtype)[..., None]
+            pooled = jnp.sum(x * mask_f, axis=1) / jnp.maximum(
+                jnp.sum(mask_f, axis=1), 1
+            )
+            pooled = nn.Dense(self.output_dim)(pooled)
+            return nn.LayerNorm()(pooled)
+
+    class AlignmentSystem(nn.Module):
+        """Joint weight autoencoder and trainable task-evidence encoders."""
+        token_width: int
+        vision_feature_dim: int
+        language_feature_dim: int
+        action_feature_dim: int
+        latent_dim: int = 128
+        hidden_dim: int = 256
+        layers: int = 3
+        heads: int = 4
+        max_tokens: int = 8192
+        max_layers: int = 64
+
+        def setup(self):
+            self.weight_autoencoder = PackedWeightAutoencoder(
+                token_width=self.token_width,
+                latent_dim=self.latent_dim,
+                hidden_dim=self.hidden_dim,
+                layers=self.layers,
+                heads=self.heads,
+                max_tokens=self.max_tokens,
+                max_layers=self.max_layers,
+                name="weight_autoencoder",
+            )
+            self.vision_evidence = DeepSetsEvidenceEncoder(
+                output_dim=self.latent_dim,
+                hidden_dim=self.hidden_dim,
+                name="vision_evidence",
+            )
+            self.language_evidence = EvidenceProjector(
+                latent_dim=self.latent_dim, name="language_evidence"
+            )
+            self.action_evidence = EvidenceProjector(
+                latent_dim=self.latent_dim, name="action_evidence"
+            )
+            self.log_temperatures = {
+                name: self.param(
+                    f"log_temperature_{name}",
+                    lambda key: jnp.asarray(np.log(0.07), dtype=jnp.float32),
+                )
+                for name in ("vision", "language", "action")
+            }
+
+        def __call__(
+            self,
+            tokens,
+            token_mask,
+            component_ids,
+            layer_ids,
+            vision_features,
+            vision_mask,
+            language_features,
+            action_features,
+            *,
+            train: bool,
+        ):
+            reconstruction, latents = self.weight_autoencoder(
+                tokens,
+                token_mask,
+                component_ids,
+                layer_ids,
+                train=train,
+            )
+            evidence = {
+                "vision": self.vision_evidence(vision_features, vision_mask),
+                "language": self.language_evidence(language_features),
+                "action": self.action_evidence(action_features),
+            }
+            temperatures = {
+                name: jnp.clip(jnp.exp(value), 0.01, 1.0)
+                for name, value in self.log_temperatures.items()
+            }
+            return reconstruction, latents, evidence, temperatures
+
+        def decode(self, latents, token_mask, component_ids, layer_ids, *, train: bool = False):
+            return self.weight_autoencoder.decoder(
+                latents, token_mask, component_ids, layer_ids, train=train
+            )
+
+else:
+    class _MissingJax:
+        def __init__(self, *args, **kwargs):
+            require_jax()
+
+    DeepSetsEvidenceEncoder = _MissingJax
+    EvidenceProjector = _MissingJax
+    AlignmentSystem = _MissingJax
 
 
-class ModalityContrastiveAligner(nn.Module):
-    """
-    Manages the 3 modality-specific prompt projectors, learnable temperatures tau_m,
-    auxiliary task classifiers, and computes L_align^(m) and L_total.
-    """
-    def __init__(
-        self,
-        d_latent: int = 128,
-        vis_dim: int = 128,
-        lang_dim: int = 384,
-        act_dim: int = 28,
-        num_classes: int = 40,
-        init_tau: float = 0.07,
-    ):
-        super().__init__()
-        self.d_latent = d_latent
+def multi_positive_info_nce(
+    token_latents,
+    token_valid,
+    evidence,
+    task_labels,
+    *,
+    temperature,
+):
+    """Symmetric multi-positive contrastive InfoNCE loss."""
+    require_jax()
+    z = token_latents / jnp.maximum(jnp.linalg.norm(token_latents, axis=-1, keepdims=True), 1e-8)
+    e = evidence / jnp.maximum(jnp.linalg.norm(evidence, axis=-1, keepdims=True), 1e-8)
+    positives = task_labels[:, None] == task_labels[None, :]
 
-        # Dedicated prompt projectors per modality
-        self.proj_vis = PromptProjector(vis_dim, d_latent)
-        self.proj_lang = PromptProjector(lang_dim, d_latent)
-        self.proj_act = PromptProjector(act_dim, d_latent)
+    logits = jnp.einsum("btd,kd->btk", z, e) / temperature
+    log_denominator = jax.scipy.special.logsumexp(logits, axis=-1)
+    positive_logits = jnp.where(positives[:, None, :], logits, -jnp.inf)
+    log_numerator = jax.scipy.special.logsumexp(positive_logits, axis=-1)
+    z_to_e = -(log_numerator - log_denominator)
+    z_to_e = jnp.sum(z_to_e * token_valid) / jnp.maximum(jnp.sum(token_valid), 1)
 
-        # Learnable log-temperatures (log(tau)) per modality
-        self.log_tau_vis = nn.Parameter(torch.tensor(math.log(init_tau)))
-        self.log_tau_lang = nn.Parameter(torch.tensor(math.log(init_tau)))
-        self.log_tau_act = nn.Parameter(torch.tensor(math.log(init_tau)))
+    mask_f = token_valid.astype(z.dtype)[..., None]
+    pooled = jnp.sum(z * mask_f, axis=1) / jnp.maximum(jnp.sum(mask_f, axis=1), 1)
+    pooled = pooled / jnp.maximum(jnp.linalg.norm(pooled, axis=-1, keepdims=True), 1e-8)
+    reverse_logits = e @ pooled.T / temperature
+    reverse_denominator = jax.scipy.special.logsumexp(reverse_logits, axis=-1)
+    reverse_positive = jnp.where(positives, reverse_logits, -jnp.inf)
+    reverse_numerator = jax.scipy.special.logsumexp(reverse_positive, axis=-1)
+    e_to_z = -jnp.mean(reverse_numerator - reverse_denominator)
+    return 0.5 * (z_to_e + e_to_z)
 
-        # Auxiliary task-classification heads on prompt embeddings (WeightCLIP style)
-        self.aux_cls_vis = nn.Linear(d_latent, num_classes)
-        self.aux_cls_lang = nn.Linear(d_latent, num_classes)
-        self.aux_cls_act = nn.Linear(d_latent, num_classes)
 
-    def get_temperature(self, modality: str) -> torch.Tensor:
-        if modality == "vis":
-            return torch.clamp(self.log_tau_vis.exp(), min=0.01, max=1.0)
-        elif modality == "lang":
-            return torch.clamp(self.log_tau_lang.exp(), min=0.01, max=1.0)
-        elif modality == "act":
-            return torch.clamp(self.log_tau_act.exp(), min=0.01, max=1.0)
-        else:
-            raise ValueError(f"Unknown modality: {modality}")
+from models.alignment_eval import (
+    AlignmentGateResult,
+    alignment_advantage_gate,
+    multi_positive_retrieval_accuracy,
+)
 
-    def project_evidence(self, evidence: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """
-        evidence: dict with 'e_vis' [B, 128], 'e_lang' [B, 384], 'e_act' [B, 28]
-        Returns: dict with projected embeddings in R^[B, d_latent]
-        """
-        return {
-            "vis": self.proj_vis(evidence["e_vis"]),
-            "lang": self.proj_lang(evidence["e_lang"]),
-            "act": self.proj_act(evidence["e_act"]),
-        }
 
-    def compute_modality_align_loss(
-        self,
-        z_tokens: torch.Tensor,
-        e_proj: torch.Tensor,
-        tau: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Computes bidirectional InfoNCE loss between weight token sequence and prompt embedding:
-            z_tokens: [B, L, d_latent]
-            e_proj:   [B, d_latent]
-            tau:      scalar temperature
-        """
-        B, L, D = z_tokens.shape
-
-        # Normalize representations
-        z_norm = F.normalize(z_tokens, p=2, dim=-1) # [B, L, D]
-        e_norm = F.normalize(e_proj, p=2, dim=-1)   # [B, D]
-
-        # 1. Weight-to-Evidence Direction: For each layer token t, match against batch evidence
-        # Similarity: [B, L, B_keys] = z_norm @ e_norm.T / tau
-        sim_z2e = torch.einsum("bld,kd->blk", z_norm, e_norm) / tau # [B, L, B]
-
-        # Target index is batch index i for each sample i
-        targets = torch.arange(B, device=z_tokens.device) # [B]
-        targets_expanded = targets.view(B, 1).expand(B, L) # [B, L]
-
-        loss_z2e = F.cross_entropy(sim_z2e.view(B * L, B), targets_expanded.reshape(-1))
-
-        # 2. Evidence-to-Weight Direction (Reverse direction):
-        # Average pooled weight representation across layers: [B, D]
-        z_pooled = F.normalize(torch.mean(z_norm, dim=1), p=2, dim=-1) # [B, D]
-        sim_e2z = torch.matmul(e_norm, z_pooled.T) / tau               # [B, B]
-        loss_e2z = F.cross_entropy(sim_e2z, targets)
-
-        loss_bidirectional = (loss_z2e + loss_e2z) / 2.0
-        return loss_bidirectional
-
-    def compute_total_loss(
-        self,
-        rec_delta_w: torch.Tensor,
-        target_delta_w: torch.Tensor,
-        latents: Dict[str, torch.Tensor],
-        evidence: Dict[str, torch.Tensor],
-        task_labels: Optional[torch.Tensor] = None,
-        lambda_vis: float = 1.0,
-        lambda_lang: float = 1.0,
-        lambda_act: float = 1.0,
-        lambda_aux: float = 0.2,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        Calculates L_total = L_recon + lambda_vis L_align^(vis) + lambda_lang L_align^(lang) + lambda_act L_align^(act) + L_aux
-        """
-        # 1. Reconstruction Loss: Huber Loss normalized by target variance to balance alignment gradients
-        target_var = target_delta_w.var().clamp(min=1e-5)
-        loss_recon = F.smooth_l1_loss(rec_delta_w, target_delta_w) / target_var
-
-        # 2. Project evidence embeddings
-        p_ev = self.project_evidence(evidence)
-
-        # 3. Modality-Specific Alignment Losses
-        loss_align_vis = self.compute_modality_align_loss(latents["vis"], p_ev["vis"], self.get_temperature("vis"))
-        loss_align_lang = self.compute_modality_align_loss(latents["lang"], p_ev["lang"], self.get_temperature("lang"))
-        loss_align_act = self.compute_modality_align_loss(latents["act"], p_ev["act"], self.get_temperature("act"))
-
-        # 4. Auxiliary Task Classification Loss
-        loss_aux = torch.tensor(0.0, device=rec_delta_w.device)
-        if task_labels is not None:
-            logits_v = self.aux_cls_vis(p_ev["vis"])
-            logits_l = self.aux_cls_lang(p_ev["lang"])
-            logits_a = self.aux_cls_act(p_ev["act"])
-            loss_aux = (
-                F.cross_entropy(logits_v, task_labels) +
-                F.cross_entropy(logits_l, task_labels) +
-                F.cross_entropy(logits_a, task_labels)
-            ) / 3.0
-
-        # Total combined loss
-        total_loss = (
-            loss_recon +
-            lambda_vis * loss_align_vis +
-            lambda_lang * loss_align_lang +
-            lambda_act * loss_align_act +
-            lambda_aux * loss_aux
-        )
-
-        metrics = {
-            "loss_total": total_loss.item(),
-            "loss_recon": loss_recon.item(),
-            "loss_align_vis": loss_align_vis.item(),
-            "loss_align_lang": loss_align_lang.item(),
-            "loss_align_act": loss_align_act.item(),
-            "loss_aux": loss_aux.item(),
-            "tau_vis": self.get_temperature("vis").item(),
-            "tau_lang": self.get_temperature("lang").item(),
-            "tau_act": self.get_temperature("act").item(),
-        }
-
-        return total_loss, metrics
+__all__ = [
+    "AlignmentGateResult",
+    "AlignmentSystem",
+    "DeepSetsEvidenceEncoder",
+    "EvidenceProjector",
+    "alignment_advantage_gate",
+    "multi_positive_info_nce",
+    "multi_positive_retrieval_accuracy",
+    "require_jax",
+]

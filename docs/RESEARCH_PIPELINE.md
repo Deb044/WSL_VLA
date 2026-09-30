@@ -2,9 +2,7 @@
 
 ## 1. Evidence boundary
 
-Only code under `wsl_vla/research` and scripts whose names contain `research` or
-`official_octo` belong to the publication path. The legacy PyTorch model is a
-custom analogue, not Octo-Small, and may be used only for CPU smoke tests.
+The canonical publication pipeline is organized into modular top-level packages: `models/`, `data/`, `core/`, `configs/`, and `scripts/`. Legacy prototype models and synthetic data fallbacks have been completely removed.
 
 The official path does not silently generate samples, download an unpinned base,
 reuse a task-specific latent during shared-policy evaluation, or report an
@@ -17,7 +15,7 @@ used to infer task identity or order.
 
 ## 2. Model and adapter design
 
-`octo_bridge.install_octo_modality_patch` replaces Octo's internal
+`models.octo_model.install_octo_modality_patch` replaces Octo's internal
 `BlockTransformer` before constructing the research model. It retains all
 official parameter paths and adds three rank-r residual updates after each
 transformer block:
@@ -32,7 +30,7 @@ those paths from the loaded parameter tree and applies `down @ up` functionally,
 so gradients flow from diffusion loss to both the decoded head adapters and the
 action latent. Its up factors are zero-initialized for exact base equivalence.
 
-The up-projection is initialized to zero. `verify_official_octo.py` loads the
+The up-projection is initialized to zero. `scripts/verify_octo.py` loads the
 unmodified and patched models, merges official weights by path and shape, and
 requires their transformer and deterministic diffusion-head output trees to
 match within absolute tolerance `1e-6` before any experiment can proceed.

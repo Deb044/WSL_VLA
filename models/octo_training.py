@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .flax_adapters import apply_dense_kernel_updates, apply_external_adapters, path_string
+from models.flax_adapters import apply_dense_kernel_updates, apply_external_adapters, path_string
 
 
 def _imports():
@@ -153,9 +153,11 @@ def adapter_value_and_grad(bundle: Any, adapter_state: Mapping[str, Any], batch,
     """Compute official task loss and adapter-only gradients for one batch."""
 
     _, _, _, jax = _imports()
-    return jax.value_and_grad(
-        lambda state: octo_diffusion_loss(
-            bundle, state, batch, rng, train=True
-        ),
-        has_aux=True,
-    )(adapter_state)
+
+    def loss_wrapper(state):
+        result = octo_diffusion_loss(bundle, state, batch, rng, train=True)
+        if isinstance(result, tuple) and len(result) == 2:
+            return result[0], result[1]
+        return result, {"loss": result}
+
+    return jax.value_and_grad(loss_wrapper, has_aux=True)(adapter_state)

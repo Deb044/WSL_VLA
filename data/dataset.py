@@ -1,149 +1,127 @@
 """
 data/dataset.py
 
-Dataset loader for LIBERO robotic demonstration trajectories.
-Supports both real HDF5 datasets and synthetic demonstration generation for local dry-runs.
+Strict real-data LIBERO HDF5 loader for robotic demonstration trajectories.
+Synthetic data generation is strictly forbidden.
 """
-import os
-import hashlib
-from typing import Tuple, Optional
-import torch
-from torch.utils.data import Dataset
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+from pathlib import Path
+from typing import Iterator, Mapping, Optional
+import h5py
+import numpy as np
+
+from data.splits import EpisodeSplit, split_episodes
+
+REQUIRED_OBSERVATIONS = ("agentview_rgb",)
 
 
-class LiberoTaskDataset(Dataset):
-    """
-    Dataset representing demonstration trajectories for a single task.
-    Yields:
-      - vis_features: [img_feat_dim] (pre-extracted or projected camera observations)
-      - lang_embed:   [lang_embed_dim] (sentence embedding of task instruction)
-      - act_history:  [action_dim] (robot's previous action state)
-      - target_act:   [action_dim] (ground-truth next teleoperated action)
-    """
+@dataclass(frozen=True)
+class LiberoEpisode:
+    episode_id: str
+    actions: np.ndarray
+    observations: Mapping[str, np.ndarray]
+
+
+class StrictLiberoHDF5:
+    """Fail-closed loader that preserves complete episode boundaries from real LIBERO HDF5 files."""
+
     def __init__(
         self,
-        task_id: str,
-        task_instruction: str,
-        data_dir: Optional[str] = "./data/libero",
-        data_path: Optional[str] = None,
-        num_synthetic_samples: int = 500,
-        img_feat_dim: int = 64,
-        lang_embed_dim: int = 384,
-        action_dim: int = 7,
-        allow_synthetic: bool = False,
-    ):
-        self.task_id = task_id
-        self.task_instruction = task_instruction
-        self.img_feat_dim = img_feat_dim
-        self.lang_embed_dim = lang_embed_dim
-        self.action_dim = action_dim
-        self.allow_synthetic = allow_synthetic
-        self.data_source = "unknown"
+        path: str | Path,
+        *,
+        require_wrist_camera: bool = False,
+        required_proprio_keys: tuple[str, ...] = (),
+    ) -> None:
+        self.path = Path(path)
+        if not self.path.is_file():
+            raise FileNotFoundError(f"real LIBERO HDF5 file not found: {self.path}")
+        self.required_observations = list(REQUIRED_OBSERVATIONS)
+        if require_wrist_camera:
+            self.required_observations.append("eye_in_hand_rgb")
+        self.required_observations.extend(required_proprio_keys)
+        self._episode_ids = self._inspect()
 
-        # Initialize consistent task instruction vector
-        g = torch.Generator().manual_seed(self._stable_seed())
-        self.lang_vector = torch.randn(self.lang_embed_dim, generator=g)
+    def _inspect(self) -> tuple[str, ...]:
+        with h5py.File(self.path, "r") as handle:
+            if "data" not in handle:
+                raise ValueError(f"{self.path} has no /data group")
+            episode_ids = tuple(sorted(handle["data"].keys()))
+            if not episode_ids:
+                raise ValueError(f"{self.path} contains no demonstrations")
+            for episode_id in episode_ids:
+                demo = handle["data"][episode_id]
+                if "actions" not in demo or "obs" not in demo:
+                    raise ValueError(f"{episode_id} lacks actions or observations")
+                actions = demo["actions"]
+                if actions.ndim != 2 or actions.shape[0] < 2:
+                    raise ValueError(f"{episode_id} has invalid action shape {actions.shape}")
+                for key in self.required_observations:
+                    if key not in demo["obs"]:
+                        raise ValueError(f"{episode_id} lacks required observation {key}")
+                    if demo["obs"][key].shape[0] != actions.shape[0]:
+                        raise ValueError(f"{episode_id}/{key} length differs from actions")
+            return episode_ids
 
-        # Auto-discover HDF5 file in data_dir if data_path is not explicitly provided
-        resolved_path = data_path
-        if resolved_path is None and data_dir and os.path.exists(data_dir):
-            resolved_path = self._find_matching_hdf5(data_dir)
+    @property
+    def episode_ids(self) -> tuple[str, ...]:
+        return self._episode_ids
 
-        if resolved_path and os.path.exists(resolved_path):
-            self._load_hdf5(resolved_path)
-            self.data_source = "real_hdf5"
-        elif allow_synthetic:
-            self._generate_synthetic_demos(num_synthetic_samples)
-            self.data_source = "synthetic_smoke_test"
-        else:
-            raise FileNotFoundError(
-                f"No real LIBERO HDF5 data found for task '{task_id}'. "
-                "Synthetic fallback is disabled. Pass allow_synthetic=True only for a labelled smoke test."
-            )
+    def split(self, *, seed: int) -> EpisodeSplit:
+        return split_episodes(self.episode_ids, seed=seed)
 
-    def _stable_seed(self) -> int:
-        """Process-independent task seed for explicitly requested smoke tests."""
-        digest = hashlib.sha256(self.task_id.encode("utf-8")).digest()
-        return int.from_bytes(digest[:4], "big") % (2**31)
+    def iter_episodes(self, episode_ids: tuple[str, ...] | None = None) -> Iterator[LiberoEpisode]:
+        selected = episode_ids or self.episode_ids
+        unknown = set(selected) - set(self.episode_ids)
+        if unknown:
+            raise KeyError(f"unknown episode ids: {sorted(unknown)}")
+        with h5py.File(self.path, "r") as handle:
+            for episode_id in selected:
+                demo = handle["data"][episode_id]
+                observations = {
+                    key: np.asarray(value)
+                    for key, value in demo["obs"].items()
+                }
+                yield LiberoEpisode(
+                    episode_id=episode_id,
+                    actions=np.asarray(demo["actions"], dtype=np.float32),
+                    observations=observations,
+                )
 
-    def _find_matching_hdf5(self, data_dir: str) -> Optional[str]:
-        """Searches data_dir for an HDF5 file matching task_instruction or task_id."""
-        clean_name = self.task_instruction.lower().strip()
-        for root, _, files in os.walk(data_dir):
-            for f in files:
-                if not f.endswith(".hdf5"):
-                    continue
-                f_lower = f.lower()
-                # Check for direct match with task name or task id
-                if clean_name in f_lower or self.task_id.lower() in f_lower:
-                    return os.path.join(root, f)
-                # Check for token overlap (e.g. key words in prompt)
-                name_tokens = [w for w in clean_name.split("_") if len(w) > 3]
-                if name_tokens and sum(1 for t in name_tokens if t in f_lower) >= min(3, len(name_tokens)):
-                    return os.path.join(root, f)
-        return None
 
-    def _load_hdf5(self, hdf5_path: str):
-        """Loads demonstration episodes and real camera images from an HDF5 dataset."""
-        import h5py
-        self.samples = []
-        g = torch.Generator().manual_seed(self._stable_seed())
-        self.lang_vector = torch.randn(self.lang_embed_dim, generator=g)
+def forbid_synthetic_research_output(*, smoke_test: bool, output_directory: str | Path) -> None:
+    """Guards against any synthetic data entering research results."""
+    output = Path(output_directory)
+    if smoke_test and "research_results" in {part.lower() for part in output.parts}:
+        raise ValueError("smoke-test or synthetic runs cannot write into research_results")
 
-        print(f"  [Dataset] Loading real demonstrations from: {os.path.basename(hdf5_path)}")
-        with h5py.File(hdf5_path, "r") as f:
-            data_grp = f["data"]
-            demo_keys = list(data_grp.keys())
-            for demo_key in demo_keys:
-                demo = data_grp[demo_key]
-                actions = demo["actions"][:]
-                has_obs = "obs" in demo
-                has_agentview = has_obs and "agentview_rgb" in demo["obs"]
 
-                num_steps = len(actions)
-                for t in range(num_steps - 1):
-                    if has_agentview:
-                        # Extract real camera frame [128, 128, 3] -> spatial average pool to img_feat_dim (64 floats)
-                        raw_frame = demo["obs"]["agentview_rgb"][t]
-                        t_frame = torch.from_numpy(raw_frame).float() / 255.0  # Normalize [0, 1]
-                        # Adaptive avg pool down to 8x8 = 64 feature vector
-                        vis_feat = torch.nn.functional.adaptive_avg_pool2d(
-                            t_frame.permute(2, 0, 1).unsqueeze(0), (8, 8)
-                        ).flatten()[: self.img_feat_dim]
-                    else:
-                        vis_feat = torch.randn(self.img_feat_dim, generator=g)
-
-                    act_hist = torch.tensor(actions[t], dtype=torch.float32)
-                    target = torch.tensor(actions[t + 1], dtype=torch.float32)
-                    self.samples.append((vis_feat, act_hist, target))
-            print(f"  [Dataset] Successfully loaded {len(self.samples)} transitions from {len(demo_keys)} demonstrations.")
-
-    def _generate_synthetic_demos(self, num_samples: int):
-        """Generates deterministic synthetic demonstration data for on-device dry-runs."""
-        g = torch.Generator().manual_seed(self._stable_seed())
-        
-        # Consistent task instruction vector
-        self.lang_vector = torch.randn(self.lang_embed_dim, generator=g)
-
-        self.samples = []
-        for _ in range(num_samples):
-            vis = torch.randn(self.img_feat_dim, generator=g)
-            act_hist = torch.randn(self.action_dim, generator=g)
-            # Semi-deterministic target action conditioned on visual & historical features
-            target = 0.5 * act_hist + 0.1 * vis[:self.action_dim] + 0.05 * torch.randn(self.action_dim, generator=g)
-            self.samples.append((vis, act_hist, target))
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        vis, act_hist, target = self.samples[idx]
-        return vis, self.lang_vector, act_hist, target
-
-    def get_raw_trajectory_for_evidence(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Returns stacked demonstration frames and actions for task evidence extraction.
-        """
-        all_frames = torch.stack([s[0] for s in self.samples[:50]], dim=0) # 50 sample frames
-        all_actions = torch.stack([s[2] for s in self.samples], dim=0)     # All actions
-        return all_frames, all_actions
+def load_suite_manifest(
+    suite_directory: str | Path,
+    expected_instructions: tuple[str, ...] | list[str],
+) -> tuple[Path, ...]:
+    """Resolve ten ordered task files from an explicit, checked sidecar."""
+    root = Path(suite_directory)
+    path = root / "manifest.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"suite data manifest is missing: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1 or not isinstance(payload.get("tasks"), list):
+        raise ValueError(f"unsupported suite manifest: {path}")
+    tasks = payload["tasks"]
+    if len(tasks) != len(expected_instructions):
+        raise ValueError(f"suite manifest task count differs from protocol: {path}")
+    resolved = []
+    for index, (entry, instruction) in enumerate(zip(tasks, expected_instructions)):
+        if entry.get("task_index") != index or entry.get("instruction") != instruction:
+            raise ValueError(f"suite manifest order/instruction mismatch at task {index}: {path}")
+        filename = entry.get("file")
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            raise ValueError(f"suite manifest contains unsafe task filename: {filename!r}")
+        task_path = root / filename
+        if not task_path.is_file() or task_path.suffix.lower() not in {".h5", ".hdf5"}:
+            raise FileNotFoundError(f"suite task file is missing: {task_path}")
+        resolved.append(task_path)
+    return tuple(resolved)

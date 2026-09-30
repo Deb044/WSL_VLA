@@ -10,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.metrics import continual_learning_metrics
-from wsl_vla.research.records import (
+from core.metrics import continual_learning_metrics
+from core.records import (
     export_evaluation_parquet,
     load_evaluation_records,
     records_to_success_matrix,

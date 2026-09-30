@@ -1,5 +1,5 @@
 # ==============================================================================
-# Environment Installation & Setup Script for Windows (PowerShell)
+# WSL_VLA: Windows PowerShell Setup Script
 # ==============================================================================
 $ErrorActionPreference = "Stop"
 $ENV_NAME = "vla_zoo"
@@ -8,7 +8,6 @@ Write-Host "====================================================================
 Write-Host " Step 1: Checking Conda Environment ($ENV_NAME)" -ForegroundColor Cyan
 Write-Host "======================================================================"
 
-# Check if environment already exists
 $envList = conda env list
 if ($envList -match "\b$ENV_NAME\b") {
     Write-Host "  -> Conda environment '$ENV_NAME' already exists." -ForegroundColor Green
@@ -18,22 +17,18 @@ if ($envList -match "\b$ENV_NAME\b") {
 }
 
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host " Step 2: Installing PyTorch & Dependencies" -ForegroundColor Cyan
+Write-Host " Step 2: Installing JAX & Dependencies" -ForegroundColor Cyan
 Write-Host "======================================================================"
 
-# Run pip within the target environment
 conda run -n $ENV_NAME python -m pip install --upgrade pip setuptools wheel
-
-Write-Host "  -> Installing PyTorch..." -ForegroundColor Yellow
-conda run -n $ENV_NAME python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-
-Write-Host "  -> Installing requirements from requirements.txt..." -ForegroundColor Yellow
+conda run -n $ENV_NAME python -m pip install jax jaxlib
 conda run -n $ENV_NAME python -m pip install -r requirements.txt
+conda run -n $ENV_NAME python -m pip install -e .
 
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host " Step 3: Running Pre-Flight Dry Run Verification" -ForegroundColor Cyan
+Write-Host " Step 3: Running Test Suite Verification" -ForegroundColor Cyan
 Write-Host "======================================================================"
-conda run -n $ENV_NAME python tests/test_local_dryrun.py
+conda run -n $ENV_NAME pytest tests/
 
 Write-Host "======================================================================" -ForegroundColor Green
 Write-Host " Setup Completed Successfully!" -ForegroundColor Green

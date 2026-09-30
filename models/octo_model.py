@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from .provenance import sha256_array_tree
+from core.provenance import sha256_array_tree
 
 
 OCTO_GIT_REVISION = "241fb3514b7c40957a86d869fecb7c7fc353f540"
@@ -171,8 +171,16 @@ def load_research_octo(
     rank: int = 8,
     alpha: float = 16.0,
     seed: int = 0,
+    **kwargs: Any,
 ) -> ResearchOctoBundle:
     """Load official weights, create the patched module, and merge by key/shape."""
+
+    if "model_id_or_path" in kwargs and checkpoint == f"hf://{OCTO_MODEL_ID}":
+        checkpoint = kwargs.pop("model_id_or_path")
+    if "adapter_rank" in kwargs:
+        rank = kwargs.pop("adapter_rank")
+    if "adapter_alpha" in kwargs:
+        alpha = kwargs.pop("adapter_alpha")
 
     _, jax, _, _, _, _, OctoModel, merge_params = _research_imports()
     resolved_checkpoint = checkpoint
@@ -204,7 +212,7 @@ def load_research_octo(
     )
     merged = merge_params(research.params, pretrained.params)
     research = research.replace(params=merged)
-    from .flax_adapters import (
+    from models.flax_adapters import (
         discover_diffusion_kernel_paths,
         initialize_external_adapters,
     )
@@ -294,7 +302,7 @@ def build_adapter_spec_and_factors(
         from flax.core import unfreeze
     except ImportError as exc:
         raise RuntimeError("Flax is required to extract Octo adapters") from exc
-    from .contracts import AdapterEntry, AdapterSpec, Component
+    from core.contracts import AdapterEntry, AdapterSpec, Component
     from .flax_adapters import path_string
 
     flat = flax.traverse_util.flatten_dict(unfreeze(bundle.research_model.params))
@@ -357,3 +365,15 @@ def build_adapter_spec_and_factors(
         entries=tuple(item[0] for item in entries_and_factors),
     )
     return spec, {entry.parameter_path: pair for entry, pair in entries_and_factors}
+
+
+load_official_octo = load_research_octo
+load_official_octo_research_model = load_research_octo
+
+# Re-exports for backwards compatibility with training scripts
+from models.octo_training import (
+    adapter_value_and_grad,
+    initial_adapter_state,
+    materialize_policy_params,
+)
+

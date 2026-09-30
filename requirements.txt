@@ -1,26 +1,30 @@
-# Core Deep Learning Framework
-torch>=2.2.0
-torchvision>=0.17.0
+# ==============================================================================
+# WSL_VLA: Core Requirements for Official Octo-Small 1.5 Research Pipeline
+# ==============================================================================
 
-# VLA Architecture & LoRA Adaptation
-transformers>=4.40.0
-peft>=0.10.0
-accelerate>=0.28.0
-
-# Data, Configs & Array Operations
+# Core Data, Numerics & Configuration
 h5py>=3.10.0
+numpy>=1.24
 pyyaml>=6.0.1
-einops>=0.7.0
+scipy>=1.10.0
 tqdm>=4.66.0
 
-# Task Evidence & Text Embeddings
-sentence-transformers>=2.6.0
+# JAX / Flax Neural Architecture & Optimization
+jax>=0.4.20
+jaxlib>=0.4.20
+flax>=0.7.5
+optax>=0.1.5
 
-# Experiment Tracking
-wandb>=0.16.0
+# Checkpointing, Hugging Face Hub & Serialization
+orbax-checkpoint>=0.4.0
+huggingface-hub>=0.20.0
+pandas>=2.0.0
+pyarrow>=14.0.0
 
-# Robotics Simulation & Headless Rendering
+# Robotics Simulation & Headless Rendering (Rollout Evaluations)
 mujoco>=3.1.0
-gymnasium>=0.29.0
 PyOpenGL>=3.1.7
-PyOpenGL_accelerate>=3.1.7
+
+# Unit & Integration Testing
+pytest>=8.0.0
+pytest-cov>=5.0.0

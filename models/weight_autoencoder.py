@@ -1,185 +1,160 @@
 """
 models/weight_autoencoder.py
 
-Implements Section 1.1 of Methodology:
-Component-Factorized Tokenization and Shared Weight Autoencoder (g_phi, h_psi).
-
-Transforms modality-factorized LoRA weight slices:
-    Delta W_m in R^[L, r * H]
-into compressed latent token representations:
-    Z_m in R^[L, d_latent]
-and reconstructs them back with a Transformer Decoder:
-    hat{Delta W}_m = h_psi(Z_m)
+Component-Factorized Masked Weight Autoencoder (g_phi, h_psi) for effective adapter updates.
+Compacts high-dimensional weight matrices into low-dimensional latent vectors.
 """
-from typing import Tuple, Dict
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+
+try:
+    import flax.linen as nn
+    import jax
+    import jax.numpy as jnp
+except ImportError as exc:
+    nn = None
+    jax = None
+    jnp = None
+    _IMPORT_ERROR = exc
+else:
+    _IMPORT_ERROR = None
 
 
-class WeightTokenEncoder(nn.Module):
-    """
-    g_phi: Transformer Encoder mapping flattened layer weight tokens into latent space.
-    Input per layer token: [r * H]
-    Output latent token:   [d_latent]
-    """
-    def __init__(self, input_dim: int, d_model: int = 256, d_latent: int = 128, nhead: int = 4, num_layers: int = 3):
-        super().__init__()
-        self.input_proj = nn.Sequential(
-            nn.Linear(input_dim, d_model),
-            nn.LayerNorm(d_model),
-            nn.GELU(),
-            nn.Linear(d_model, d_model),
-        )
-        self.pos_embed = nn.Parameter(torch.randn(1, 32, d_model) * 0.02) # Max 32 layers
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=d_model * 4,
-            dropout=0.0,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.to_latent = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, d_latent),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [Batch, L, r * H]
-        Returns: [Batch, L, d_latent]
-        """
-        B, L, _ = x.shape
-        h = self.input_proj(x) + self.pos_embed[:, :L, :]
-        h = self.transformer(h)
-        z = self.to_latent(h)
-        return z
+def require_jax() -> None:
+    if _IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "The official research path requires Python 3.10/3.11 with the "
+            "'research' extra installed under Linux/WSL2."
+        ) from _IMPORT_ERROR
 
 
-class WeightTokenDecoder(nn.Module):
-    """
-    h_psi: Transformer Decoder mapping latent token sequences back to weight space.
-    Input latent token: [d_latent]
-    Output weight slice: [r * H]
-    """
-    def __init__(self, output_dim: int, d_model: int = 256, d_latent: int = 128, nhead: int = 4, num_layers: int = 3):
-        super().__init__()
-        self.from_latent = nn.Sequential(
-            nn.Linear(d_latent, d_model),
-            nn.LayerNorm(d_model),
-            nn.GELU(),
-        )
-        self.pos_embed = nn.Parameter(torch.randn(1, 32, d_model) * 0.02)
+if nn is not None:
 
-        decoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=d_model * 4,
-            dropout=0.0,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.transformer = nn.TransformerEncoder(decoder_layer, num_layers=num_layers)
-        self.out_proj = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, d_model * 2),
-            nn.GELU(),
-            nn.Linear(d_model * 2, output_dim),
-        )
+    class PackedWeightEncoder(nn.Module):
+        """Encodes packed effective update tokens into low-dimensional latent space."""
+        token_width: int
+        latent_dim: int
+        hidden_dim: int
+        layers: int
+        heads: int
+        max_tokens: int
+        max_layers: int
+        component_count: int
 
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        """
-        z: [Batch, L, d_latent]
-        Returns: [Batch, L, r * H]
-        """
-        B, L, _ = z.shape
-        h = self.from_latent(z) + self.pos_embed[:, :L, :]
-        h = self.transformer(h)
-        out = self.out_proj(h)
-        return out
+        @nn.compact
+        def __call__(self, tokens, token_mask, component_ids, layer_ids, *, train: bool):
+            token_valid = jnp.any(token_mask, axis=-1)
+            x = nn.Dense(self.hidden_dim, name="input_projection")(tokens)
+            position = self.param(
+                "position_embedding",
+                nn.initializers.normal(stddev=0.02),
+                (self.max_tokens, self.hidden_dim),
+            )[: tokens.shape[1]]
+            component = nn.Embed(
+                self.component_count, self.hidden_dim, name="component_embedding"
+            )(component_ids)
+            layer = nn.Embed(self.max_layers, self.hidden_dim, name="layer_embedding")(
+                layer_ids
+            )
+            x = x + position[None] + component + layer
+            attention_mask = nn.make_attention_mask(token_valid, token_valid)
+            for index in range(self.layers):
+                residual = x
+                x = nn.LayerNorm(name=f"encoder_norm_attn_{index}")(x)
+                x = nn.SelfAttention(
+                    num_heads=self.heads,
+                    dropout_rate=0.0,
+                    name=f"encoder_attention_{index}",
+                )(x, mask=attention_mask, deterministic=not train)
+                x = residual + x
+                residual = x
+                x = nn.LayerNorm(name=f"encoder_norm_mlp_{index}")(x)
+                x = nn.Dense(self.hidden_dim * 4, name=f"encoder_mlp_in_{index}")(x)
+                x = nn.gelu(x)
+                x = nn.Dense(self.hidden_dim, name=f"encoder_mlp_out_{index}")(x)
+                x = residual + x
+            return nn.Dense(self.latent_dim, name="to_latent")(x) * token_valid[..., None]
+
+    class PackedWeightDecoder(nn.Module):
+        """Decodes latent vectors back to effective update tokens."""
+        token_width: int
+        latent_dim: int
+        hidden_dim: int
+
+        @nn.compact
+        def __call__(self, latent, token_mask, component_ids, layer_ids, *, train: bool):
+            del component_ids, layer_ids, train
+            token_valid = jnp.any(token_mask, axis=-1)
+            x = nn.Dense(self.hidden_dim, name="from_latent")(latent)
+            x = nn.gelu(x)
+            x = nn.LayerNorm(name="decoder_norm")(x)
+            output = nn.Dense(self.token_width, name="output_projection")(x)
+            return output * token_mask * token_valid[..., None]
+
+    class PackedWeightAutoencoder(nn.Module):
+        """Masked shared token autoencoder with a separately callable decoder."""
+        token_width: int
+        latent_dim: int = 128
+        hidden_dim: int = 256
+        layers: int = 3
+        heads: int = 4
+        max_tokens: int = 8192
+        max_layers: int = 64
+        component_count: int = 3
+
+        def setup(self):
+            self.encoder = PackedWeightEncoder(
+                token_width=self.token_width,
+                latent_dim=self.latent_dim,
+                hidden_dim=self.hidden_dim,
+                layers=self.layers,
+                heads=self.heads,
+                max_tokens=self.max_tokens,
+                max_layers=self.max_layers,
+                component_count=self.component_count,
+                name="encoder",
+            )
+            self.decoder = PackedWeightDecoder(
+                token_width=self.token_width,
+                latent_dim=self.latent_dim,
+                hidden_dim=self.hidden_dim,
+                name="decoder",
+            )
+
+        def __call__(self, tokens, token_mask, component_ids, layer_ids, *, train: bool):
+            latent = self.encoder(
+                tokens, token_mask, component_ids, layer_ids, train=train
+            )
+            reconstruction = self.decoder(
+                latent, token_mask, component_ids, layer_ids, train=train
+            )
+            return reconstruction, latent
+
+else:
+    class _MissingJax:
+        def __init__(self, *args, **kwargs):
+            require_jax()
+
+    PackedWeightAutoencoder = _MissingJax
+    PackedWeightEncoder = _MissingJax
+    PackedWeightDecoder = _MissingJax
 
 
-class FactorizedWeightAutoencoder(nn.Module):
-    """
-    Unified Component-Factorized Weight Autoencoder.
-    Processes Delta W in R^[B, L, 3, r, H] by decomposing along modality dimension:
-      - vis  (m=0): Z_vis  = g_phi(Delta W_vis)
-      - lang (m=1): Z_lang = g_phi(Delta W_lang)
-      - act  (m=2): Z_act  = g_phi(Delta W_act)
-    """
-    def __init__(self, num_layers: int = 8, rank: int = 16, hidden_dim: int = 384, d_latent: int = 128):
-        super().__init__()
-        self.num_layers = num_layers
-        self.rank = rank
-        self.hidden_dim = hidden_dim
-        self.weight_dim = rank * hidden_dim
-        self.d_latent = d_latent
+def masked_reconstruction_loss(reconstruction, target, mask):
+    """Normalized mean squared error over unmasked effective update entries."""
+    require_jax()
+    weights = mask.astype(reconstruction.dtype)
+    numerator = jnp.sum(jnp.square(reconstruction - target) * weights)
+    return numerator / jnp.maximum(jnp.sum(weights), 1)
 
-        # Shared Encoder & Decoder across modalities
-        self.encoder = WeightTokenEncoder(input_dim=self.weight_dim, d_latent=d_latent)
-        self.decoder = WeightTokenDecoder(output_dim=self.weight_dim, d_latent=d_latent)
 
-    def encode(self, delta_w: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """
-        delta_w: [Batch, L, 3, r, H]
-        Returns dict containing:
-          - Z_vis:  [Batch, L, d_latent]
-          - Z_lang: [Batch, L, d_latent]
-          - Z_act:  [Batch, L, d_latent]
-          - Z_stacked: [Batch, L, 3, d_latent]
-        """
-        if delta_w.dim() == 4:
-            delta_w = delta_w.unsqueeze(0)
-        B, L, M, r, H = delta_w.shape
-        assert M == 3, f"Expected 3 modalities (vis, lang, act), got {M}"
-
-        # Flatten (r, H) -> (r * H)
-        flat_w = delta_w.view(B, L, 3, self.weight_dim)
-
-        z_vis = self.encoder(flat_w[:, :, 0, :])
-        z_lang = self.encoder(flat_w[:, :, 1, :])
-        z_act = self.encoder(flat_w[:, :, 2, :])
-
-        z_stacked = torch.stack([z_vis, z_lang, z_act], dim=2) # [B, L, 3, d_latent]
-
-        return {
-            "vis": z_vis,
-            "lang": z_lang,
-            "act": z_act,
-            "stacked": z_stacked,
-        }
-
-    def decode(self, latents: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """
-        latents: dict with 'vis', 'lang', 'act' [Batch, L, d_latent] or 'stacked' [Batch, L, 3, d_latent]
-        Returns: hat{Delta W} in R^[Batch, L, 3, r, H]
-        """
-        if "vis" in latents and "lang" in latents and "act" in latents:
-            z_vis, z_lang, z_act = latents["vis"], latents["lang"], latents["act"]
-        elif "stacked" in latents and latents["stacked"] is not None:
-            z_stacked = latents["stacked"]
-            z_vis, z_lang, z_act = z_stacked[:, :, 0, :], z_stacked[:, :, 1, :], z_stacked[:, :, 2, :]
-        else:
-            raise KeyError("latents must contain either ('vis', 'lang', 'act') or 'stacked'")
-
-        B, L, _ = z_vis.shape
-        rec_vis = self.decoder(z_vis).view(B, L, 1, self.rank, self.hidden_dim)
-        rec_lang = self.decoder(z_lang).view(B, L, 1, self.rank, self.hidden_dim)
-        rec_act = self.decoder(z_act).view(B, L, 1, self.rank, self.hidden_dim)
-
-        rec_delta_w = torch.cat([rec_vis, rec_lang, rec_act], dim=2) # [B, L, 3, r, H]
-        return rec_delta_w
-
-    def forward(self, delta_w: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        Forward autoencoding pass.
-        Returns: (reconstructed_delta_w, latent_dict)
-        """
-        latents = self.encode(delta_w)
-        rec_delta_w = self.decode(latents)
-        return rec_delta_w, latents
+__all__ = [
+    "PackedWeightAutoencoder",
+    "PackedWeightEncoder",
+    "PackedWeightDecoder",
+    "masked_reconstruction_loss",
+    "require_jax",
+]

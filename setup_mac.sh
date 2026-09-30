@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# macOS Setup Script for VLA Model Zoo (Apple Silicon M1/M2/M3/M4 & Intel Mac)
+# WSL_VLA: macOS Setup Script (Apple Silicon & Intel)
 # ==============================================================================
 set -euo pipefail
 
 ENV_NAME="vla_zoo"
 
 echo "======================================================================"
-echo " Setting up VLA Model Zoo on macOS"
+echo " Setting up WSL_VLA on macOS"
 echo "======================================================================"
 
-# 1. Check for Homebrew / Conda
-if command -v conda &> /dev/null; then
-    eval "$(conda shell.bash hook)"
+# 1. Locate Conda
+if [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniforge3/etc/profile.d/conda.sh"
 elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     source "$HOME/miniconda3/etc/profile.d/conda.sh"
 elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
     source "$HOME/anaconda3/etc/profile.d/conda.sh"
 elif [ -f "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh" ]; then
     source "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh"
-elif [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then
-    source "$HOME/miniforge3/etc/profile.d/conda.sh"
+elif command -v conda &> /dev/null; then
+    eval "$(conda shell.bash hook)"
 else
-    echo "Conda not found. Please install Miniconda or Miniforge first:"
-    echo "  brew install --cask miniconda"
+    echo "Conda not found. Please install Miniforge or Miniconda first:"
+    echo "  brew install --cask miniforge"
     exit 1
 fi
 
@@ -37,37 +37,21 @@ fi
 conda activate "${ENV_NAME}"
 
 # 3. macOS Rendering Configuration
-# On macOS, MuJoCo uses CGL/GLFW rendering rather than Linux EGL
 export MUJOCO_GL=cgl
 
 # 4. Install Dependencies
 echo "  -> Upgrading pip & installing dependencies..."
 pip install --upgrade pip setuptools wheel
-pip install torch torchvision
+pip install jax jaxlib
 pip install -r requirements.txt
+pip install -e .
 
-# 5. Verification Check (Testing Apple Silicon MPS backend)
+# 5. Verification Check
 echo "======================================================================"
-echo " Verifying Environment & Apple Silicon Metal (MPS) Acceleration"
+echo " Running Verification Tests"
 echo "======================================================================"
-python -c "
-import torch
-import peft
-import mujoco
-
-print('--- macOS Verification Summary ---')
-print('PyTorch Version :', torch.__version__)
-mps_available = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
-print('Apple MPS Available (Metal GPU):', mps_available)
-if mps_available:
-    print('Hardware Acceleration : Apple Silicon GPU (Metal) ACTIVE')
-else:
-    print('Hardware Acceleration : CPU')
-print('PEFT Version    :', peft.__version__)
-print('MuJoCo Version  :', mujoco.__version__)
-print('Setup completed successfully on macOS!')
-"
+pytest tests/
 
 echo "======================================================================"
-echo " Ready! Run: conda activate ${ENV_NAME}"
+echo " Setup Completed! Run: conda activate ${ENV_NAME}"
 echo "======================================================================"

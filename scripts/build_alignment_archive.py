@@ -13,8 +13,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.packing import load_packed_adapter
-from wsl_vla.research.protocol import REQUIRED_SUITES
+from models.packing import load_packed_adapter
+from core.protocol import REQUIRED_SUITES
 
 
 def main() -> int:

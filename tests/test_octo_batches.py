@@ -1,7 +1,7 @@
 import numpy as np
 
-from wsl_vla.research.data import LiberoEpisode
-from wsl_vla.research.octo_batches import (
+from data.dataset import LiberoEpisode
+from data.batches import (
     ActionNormalization,
     collate_octo_examples,
     iter_octo_examples,

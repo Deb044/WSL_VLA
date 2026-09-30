@@ -6,7 +6,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
-from .contracts import AdapterSpec, Component
+from core.contracts import AdapterSpec, Component
 
 
 def validate_consecutive_stages(previous_stage: int, current_stage: int) -> None:

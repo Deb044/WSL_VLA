@@ -5,15 +5,15 @@ from dataclasses import asdict
 import numpy as np
 import pytest
 
-from wsl_vla.research.contracts import AdapterEntry, AdapterSpec, Component
-from wsl_vla.research.mapping import fit_linear_ridge_mapper
-from wsl_vla.research.packing import (
+from core.contracts import AdapterEntry, AdapterSpec, Component
+from models.prompt_mapper import fit_linear_ridge_mapper
+from models.packing import (
     load_packed_adapter,
     pack_low_rank_adapter,
     save_packed_adapter,
     unpack_effective_updates,
 )
-from wsl_vla.research.protocol import (
+from core.protocol import (
     expand_population_runs,
     load_yaml,
     publication_folds,
@@ -99,7 +99,7 @@ def test_linear_mapper_recovers_affine_relation():
 
 
 def test_locked_protocol_expands_to_360_population_checkpoints():
-    config = load_yaml("configs/research/base.yaml")
+    config = load_yaml("configs/base.yaml")
     tasks = load_yaml("configs/reference_tasks.yaml")
     validate_research_config(config)
     validate_reference_tasks(tasks)
@@ -107,3 +107,40 @@ def test_locked_protocol_expands_to_360_population_checkpoints():
     assert len(runs) == 360
     assert len(publication_folds()) == 4
     assert all(len(fold.train_suites) == 3 for fold in publication_folds())
+
+
+def test_ood_evaluation_record_roundtrip(tmp_path):
+    from core.contracts import OODEvaluationRecord
+    from core.records import append_ood_evaluation_record, load_ood_evaluation_records
+
+    record = OODEvaluationRecord(
+        run_id="run_ood_0",
+        held_out_suite="libero_spatial",
+        task_id="libero_spatial_0",
+        seed=42,
+        method="proposed_asymmetric",
+        adaptation_steps=50,
+        rollout_count=20,
+        successes=17,
+        checkpoint_sha256="c" * 64,
+        wall_time_seconds=12.5,
+    )
+    assert record.success_rate == pytest.approx(0.85)
+
+    path = tmp_path / "ood_records.jsonl"
+    append_ood_evaluation_record(record, path)
+    loaded = load_ood_evaluation_records(path)
+    assert len(loaded) == 1
+    assert loaded[0] == record
+
+
+def test_resolve_config_path_locates_files():
+    from core.protocol import resolve_config_path
+
+    resolved = resolve_config_path("configs/base.yaml")
+    assert resolved.is_file()
+    assert resolved.name == "base.yaml"
+
+    resolved_by_name = resolve_config_path("base.yaml")
+    assert resolved_by_name.is_file()
+    assert resolved_by_name.name == "base.yaml"

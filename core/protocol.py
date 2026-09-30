@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from .splits import SuiteFold, leave_one_suite_out_folds
+from data.splits import SuiteFold, leave_one_suite_out_folds
 
 
 REQUIRED_SUITES = (
@@ -28,8 +28,22 @@ class PopulationRun:
     checkpoint_fraction: float
 
 
+def resolve_config_path(path: str | Path) -> Path:
+    """Resolve a config path relative to cwd or repository root."""
+    target = Path(path)
+    if target.is_file():
+        return target
+    repo_root = Path(__file__).resolve().parent.parent
+    if (repo_root / target).is_file():
+        return repo_root / target
+    if (repo_root / "configs" / target.name).is_file():
+        return repo_root / "configs" / target.name
+    return target
+
+
 def load_yaml(path: str | Path) -> dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as stream:
+    resolved = resolve_config_path(path)
+    with resolved.open("r", encoding="utf-8") as stream:
         payload = yaml.safe_load(stream)
     if not isinstance(payload, dict):
         raise ValueError(f"{path} must contain a YAML mapping")

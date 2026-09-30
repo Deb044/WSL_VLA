@@ -1,208 +1,362 @@
 #!/usr/bin/env python3
-"""
-scripts/train_alignment.py
+"""Train the joint aligned weight autoencoder on a strict packed-zoo archive.
 
-Implements Weight-Space Alignment Training (Methodology Sections 1.1 and 1.2).
-Loads the Model Zoo population checkpoints:
-    Delta W in R^[N_tasks, L, 3, r, H]
-and multi-modal evidence tuples:
-    M = {e_vis, e_lang, e_act}
-and trains the shared FactorizedWeightAutoencoder (g_phi, h_psi) and ModalityContrastiveAligner.
-
-Objective:
-    L_total = L_recon + lambda_vis L_align^(vis) + lambda_lang L_align^(lang) + lambda_act L_align^(act) + lambda_aux L_aux
+The input NPZ is deliberately explicit and contains no pickled objects. Required
+arrays are documented in ``docs/RESEARCH_PIPELINE.md``.
 """
+
+from __future__ import annotations
+
+import argparse
+import json
 import os
 import sys
-import argparse
-import yaml
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+import tempfile
+from pathlib import Path
 
-# Repo root
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import numpy as np
 
-from models import FactorizedWeightAutoencoder, ModalityContrastiveAligner
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from models.prompt_mapper import fit_linear_ridge_mapper
 
 
-class ModelZooPopulationDataset(Dataset):
-    """Dataset of trained task LoRA weights and multi-modal task evidence."""
-    def __init__(self, checkpoint_dir: str):
-        self.samples = []
-        if not os.path.exists(checkpoint_dir):
-            raise FileNotFoundError(f"Checkpoint directory '{checkpoint_dir}' does not exist.")
-
-        ckpt_files = sorted([f for f in os.listdir(checkpoint_dir) if f.startswith("task_") and f.endswith(".pt")])
-        if not ckpt_files:
-            raise RuntimeError(f"No task checkpoints found in '{checkpoint_dir}'. Train the Model Zoo first.")
-
-        print(f"Loading {len(ckpt_files)} Model Zoo task checkpoints for Alignment...")
-        for idx, fname in enumerate(ckpt_files):
-            fpath = os.path.join(checkpoint_dir, fname)
-            data = torch.load(fpath, map_location="cpu")
-            self.samples.append({
-                "task_id": data["task_id"],
-                "task_label": idx,
-                "delta_w": data["delta_w"], # [L, 3, r, H]
-                "e_vis": data["e_vis"],     # [128]
-                "e_lang": data["e_lang"],   # [384]
-                "e_act": data["e_act"],     # [28]
-            })
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int) -> dict:
-        return self.samples[idx]
+REQUIRED_ARRAYS = {
+    "tokens",
+    "token_mask",
+    "component_ids",
+    "layer_ids",
+    "vision_features",
+    "vision_mask",
+    "language_features",
+    "action_features",
+    "task_labels",
+    "split",
+}
 
 
-def collate_zoo_batch(batch):
-    return {
-        "task_id": [b["task_id"] for b in batch],
-        "task_label": torch.tensor([b["task_label"] for b in batch], dtype=torch.long),
-        "delta_w": torch.stack([b["delta_w"] for b in batch], dim=0),
-        "e_vis": torch.stack([b["e_vis"] for b in batch], dim=0),
-        "e_lang": torch.stack([b["e_lang"] for b in batch], dim=0),
-        "e_act": torch.stack([b["e_act"] for b in batch], dim=0),
-    }
+def load_dataset(path: str | Path) -> dict[str, np.ndarray]:
+    with np.load(path, allow_pickle=False) as archive:
+        missing = REQUIRED_ARRAYS - set(archive.files)
+        if missing:
+            raise ValueError(f"packed zoo archive lacks arrays: {sorted(missing)}")
+        data = {name: archive[name] for name in REQUIRED_ARRAYS}
+    sample_count = data["tokens"].shape[0]
+    if any(value.shape[0] != sample_count for value in data.values()):
+        raise ValueError("all packed zoo arrays must share the sample dimension")
+    if data["tokens"].shape != data["token_mask"].shape:
+        raise ValueError("tokens and token_mask must have identical shapes")
+    if set(np.unique(data["split"])) - {b"train", b"validation"}:
+        raise ValueError("alignment archive may contain only train and validation samples")
+    if not np.any(data["split"] == b"train") or not np.any(data["split"] == b"validation"):
+        raise ValueError("both train and validation samples are required")
+    return data
 
 
-def train_alignment(
-    checkpoint_dir: str = "./checkpoints/model_zoo",
-    output_dir: str = "./checkpoints/weight_alignment",
-    num_epochs: int = 150,
-    lr: float = 5e-4,
-    d_latent: int = 128,
-    lambda_vis: float = 1.0,
-    lambda_lang: float = 1.0,
-    lambda_act: float = 1.0,
-    lambda_aux: float = 0.2,
-):
-    os.makedirs(output_dir, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("=" * 80)
-    print(" Training Weight-Space Alignment (Methodology 1.1 & 1.2)")
-    print(f" Device: {device} | Output: {output_dir}")
-    print("=" * 80)
+def atomic_write(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
-    dataset = ModelZooPopulationDataset(checkpoint_dir)
-    sample_dw = dataset[0]["delta_w"]
-    num_layers, _, rank, hidden_dim = sample_dw.shape
-    num_tasks = len(dataset)
 
-    # Instantiate Autoencoder & Aligner
-    autoencoder = FactorizedWeightAutoencoder(
-        num_layers=num_layers,
-        rank=rank,
-        hidden_dim=hidden_dim,
-        d_latent=d_latent,
-    ).to(device)
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("archive")
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--latent-dim", type=int, default=128)
+    parser.add_argument("--hidden-dim", type=int, default=256)
+    parser.add_argument("--layers", type=int, default=3)
+    parser.add_argument("--heads", type=int, default=4)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--gradient-accumulation", type=int, default=8)
+    parser.add_argument("--patience", type=int, default=20)
+    parser.add_argument("--ridge-alphas", default="0.001,0.01,0.1,1,10")
+    parser.add_argument(
+        "--contrastive-weight",
+        type=float,
+        default=1.0,
+        help="Set to zero for the locked reconstruction-only ablation.",
+    )
+    args = parser.parse_args()
 
-    aligner = ModalityContrastiveAligner(
-        d_latent=d_latent,
-        vis_dim=dataset[0]["e_vis"].shape[-1],
-        lang_dim=dataset[0]["e_lang"].shape[-1],
-        act_dim=dataset[0]["e_act"].shape[-1],
-        num_classes=num_tasks,
-    ).to(device)
+    try:
+        import flax.serialization
+        from flax.training import train_state
+        import jax
+        import jax.numpy as jnp
+        import optax
+    except ImportError as exc:
+        raise RuntimeError("install requirements-research.txt in WSL2 before alignment training") from exc
 
-    optimizer = torch.optim.AdamW(
-        list(autoencoder.parameters()) + list(aligner.parameters()),
-        lr=lr,
-        weight_decay=1e-4,
+    from models.contrastive_alignment import (
+        AlignmentSystem,
+        multi_positive_info_nce,
+    )
+    from models.differential_regularizer import estimate_empirical_shell
+    from models.weight_autoencoder import masked_reconstruction_loss
+
+    data = load_dataset(args.archive)
+    archive_path = Path(args.archive)
+    archive_manifest_path = archive_path.with_suffix(".manifest.json")
+    if not archive_manifest_path.is_file():
+        raise FileNotFoundError("alignment archive manifest is required")
+    archive_manifest = json.loads(archive_manifest_path.read_text(encoding="utf-8"))
+    if archive_manifest.get("schema_version") != 1 or "adapter_spec" not in archive_manifest:
+        raise ValueError("alignment archive manifest has no supported AdapterSpec")
+    if args.batch_size <= 0 or args.gradient_accumulation <= 0 or args.patience <= 0:
+        raise ValueError("batch size, gradient accumulation, and patience must be positive")
+    if args.contrastive_weight < 0:
+        raise ValueError("contrastive weight cannot be negative")
+    train_indices = np.flatnonzero(data["split"] == b"train")
+    validation_indices = np.flatnonzero(data["split"] == b"validation")
+    token_width = data["tokens"].shape[-1]
+    model = AlignmentSystem(
+        token_width=token_width,
+        vision_feature_dim=data["vision_features"].shape[-1],
+        language_feature_dim=data["language_features"].shape[-1],
+        action_feature_dim=data["action_features"].shape[-1],
+        latent_dim=args.latent_dim,
+        hidden_dim=args.hidden_dim,
+        layers=args.layers,
+        heads=args.heads,
+        max_tokens=data["tokens"].shape[1],
+        max_layers=int(data["layer_ids"].max()) + 1,
     )
 
-    # Batch size (include all available tasks in population for contrastive negatives)
-    batch_size = min(len(dataset), 64)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=False,
-        collate_fn=collate_zoo_batch,
+    def subset(indices):
+        return {name: jnp.asarray(value[indices]) for name, value in data.items() if name != "split"}
+
+    initial_batch = subset(train_indices[: args.batch_size])
+
+    def apply_model(params, batch, *, train):
+        return model.apply(
+            {"params": params},
+            batch["tokens"],
+            batch["token_mask"],
+            batch["component_ids"],
+            batch["layer_ids"],
+            batch["vision_features"],
+            batch["vision_mask"],
+            batch["language_features"],
+            batch["action_features"],
+            train=train,
+        )
+
+    def loss_fn(params, batch, *, train):
+        reconstruction, latents, evidence, temperatures = apply_model(params, batch, train=train)
+        loss_reconstruction = masked_reconstruction_loss(
+            reconstruction, batch["tokens"], batch["token_mask"]
+        )
+        token_valid = jnp.any(batch["token_mask"], axis=-1)
+        losses = {}
+        for component_index, name in enumerate(("vision", "language", "action")):
+            modality_valid = token_valid & (batch["component_ids"] == component_index)
+            losses[name] = multi_positive_info_nce(
+                latents,
+                modality_valid,
+                evidence[name],
+                batch["task_labels"],
+                temperature=temperatures[name],
+            )
+        total = loss_reconstruction + args.contrastive_weight * sum(losses.values())
+        return total, {
+            "reconstruction": loss_reconstruction,
+            "vision": losses["vision"],
+            "language": losses["language"],
+            "action": losses["action"],
+        }
+
+    rng = jax.random.PRNGKey(args.seed)
+    variables = model.init(
+        rng,
+        initial_batch["tokens"],
+        initial_batch["token_mask"],
+        initial_batch["component_ids"],
+        initial_batch["layer_ids"],
+        initial_batch["vision_features"],
+        initial_batch["vision_mask"],
+        initial_batch["language_features"],
+        initial_batch["action_features"],
+        train=True,
+    )
+    state = train_state.TrainState.create(
+        apply_fn=model.apply,
+        params=variables["params"],
+        tx=optax.MultiSteps(
+            optax.chain(
+                optax.clip_by_global_norm(1.0),
+                optax.adamw(args.learning_rate, weight_decay=1e-4),
+            ),
+            every_k_schedule=args.gradient_accumulation,
+        ),
     )
 
-    print(f"Model Configuration -> Layers: {num_layers}, Rank: {rank}, Hidden: {hidden_dim}, Latent D: {d_latent}")
-    print(f"Population Size: {num_tasks} tasks | Batch size: {batch_size}")
+    @jax.jit
+    def train_step(current, batch):
+        (_, metrics), gradients = jax.value_and_grad(loss_fn, has_aux=True)(
+            current.params, batch, train=True
+        )
+        return current.apply_gradients(grads=gradients), metrics
 
-    for epoch in range(1, num_epochs + 1):
-        autoencoder.train()
-        aligner.train()
-        epoch_metrics = {}
+    @jax.jit
+    def validation_loss(params, batch):
+        return loss_fn(params, batch, train=False)
 
-        for batch in dataloader:
-            delta_w = batch["delta_w"].to(device)
-            evidence = {
-                "e_vis": batch["e_vis"].to(device),
-                "e_lang": batch["e_lang"].to(device),
-                "e_act": batch["e_act"].to(device),
+    best_params = state.params
+    best_validation = float("inf")
+    stale_epochs = 0
+    history = []
+    generator = np.random.default_rng(args.seed)
+
+    def batches(indices, *, shuffle):
+        ordered = np.asarray(indices).copy()
+        if shuffle:
+            generator.shuffle(ordered)
+        for start in range(0, len(ordered), args.batch_size):
+            yield subset(ordered[start : start + args.batch_size])
+
+    def evaluate(params, indices):
+        totals = []
+        metric_rows = []
+        weights = []
+        for batch in batches(indices, shuffle=False):
+            total, metrics = validation_loss(params, batch)
+            weight = int(batch["tokens"].shape[0])
+            totals.append(float(total) * weight)
+            metric_rows.append({name: float(value) * weight for name, value in metrics.items()})
+            weights.append(weight)
+        denominator = sum(weights)
+        return sum(totals) / denominator, {
+            name: sum(row[name] for row in metric_rows) / denominator
+            for name in metric_rows[0]
+        }
+
+    for epoch in range(1, args.epochs + 1):
+        train_rows = []
+        train_weights = []
+        for train_batch in batches(train_indices, shuffle=True):
+            state, batch_metrics = train_step(state, train_batch)
+            train_rows.append({name: float(value) for name, value in batch_metrics.items()})
+            train_weights.append(int(train_batch["tokens"].shape[0]))
+        train_metrics = {
+            name: sum(row[name] * weight for row, weight in zip(train_rows, train_weights))
+            / sum(train_weights)
+            for name in train_rows[0]
+        }
+        validation_value, validation_metrics = evaluate(state.params, validation_indices)
+        if validation_value < best_validation:
+            best_validation = validation_value
+            best_params = state.params
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
+        history.append(
+            {
+                "epoch": epoch,
+                "train": train_metrics,
+                "validation": {
+                    "total": validation_value,
+                    **{name: float(value) for name, value in validation_metrics.items()},
+                },
             }
-            labels = batch["task_label"].to(device)
+        )
+        if stale_epochs >= args.patience:
+            break
 
-            optimizer.zero_grad()
+    def collect_outputs(indices):
+        latent_parts = []
+        evidence_parts = {name: [] for name in ("vision", "language", "action")}
+        for batch in batches(indices, shuffle=False):
+            _, latents, evidence, _ = jax.device_get(apply_model(best_params, batch, train=False))
+            latent_parts.append(np.asarray(latents))
+            for name in evidence_parts:
+                evidence_parts[name].append(np.asarray(evidence[name]))
+        return np.concatenate(latent_parts), {
+            name: np.concatenate(parts) for name, parts in evidence_parts.items()
+        }
 
-            # 1. Forward autoencoder
-            rec_delta_w, latents = autoencoder(delta_w)
+    train_latents, train_evidence = collect_outputs(train_indices)
+    validation_latents, validation_evidence = collect_outputs(validation_indices)
+    train_component_ids = data["component_ids"][train_indices]
+    validation_component_ids = data["component_ids"][validation_indices]
+    token_valid_train = np.any(data["token_mask"][train_indices], axis=-1)
 
-            # 2. Compute total contrastive + reconstruction + aux loss
-            total_loss, metrics = aligner.compute_total_loss(
-                rec_delta_w=rec_delta_w,
-                target_delta_w=delta_w,
-                latents=latents,
-                evidence=evidence,
-                task_labels=labels,
-                lambda_vis=lambda_vis,
-                lambda_lang=lambda_lang,
-                lambda_act=lambda_act,
-                lambda_aux=lambda_aux,
-            )
+    mapper_payload = {}
+    shell_payload = {}
+    selected_alphas = {}
+    alpha_candidates = [float(value) for value in args.ridge_alphas.split(",")]
+    for component_index, name in enumerate(("vision", "language", "action")):
+        positions = (train_component_ids[0] == component_index) & token_valid_train[0]
+        if not np.all(train_component_ids[:, positions] == component_index):
+            raise ValueError("component token layout differs across adapter samples")
+        targets = np.asarray(train_latents)[:, positions]
+        validation_targets = np.asarray(validation_latents)[:, positions]
+        best_mapper = None
+        best_mapper_error = float("inf")
+        for alpha in alpha_candidates:
+            mapper = fit_linear_ridge_mapper(np.asarray(train_evidence[name]), targets, ridge_alpha=alpha)
+            prediction = mapper.predict(np.asarray(validation_evidence[name]))
+            error = float(np.mean(np.square(prediction - validation_targets)))
+            if error < best_mapper_error:
+                best_mapper_error = error
+                best_mapper = mapper
+        selected_alphas[name] = best_mapper.ridge_alpha
+        mapper_payload[f"{name}_coefficient"] = best_mapper.coefficient
+        mapper_payload[f"{name}_intercept"] = best_mapper.intercept
+        mapper_payload[f"{name}_latent_shape"] = np.asarray(best_mapper.latent_shape)
+        shell = estimate_empirical_shell(
+            jnp.asarray(targets), jnp.ones(targets.shape[:2], dtype=bool)
+        )
+        shell_payload[f"{name}_center"] = np.asarray(shell.center)
+        shell_payload[f"{name}_radius"] = np.asarray(shell.radius)
 
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                list(autoencoder.parameters()) + list(aligner.parameters()),
-                max_norm=1.0,
-            )
-            optimizer.step()
-
-            for k, v in metrics.items():
-                epoch_metrics[k] = epoch_metrics.get(k, 0.0) + v
-
-        if epoch % 25 == 0 or epoch == num_epochs:
-            print(
-                f"[Epoch {epoch:03d}/{num_epochs}] Total Loss: {epoch_metrics['loss_total']:.4f} | "
-                f"Recon: {epoch_metrics['loss_recon']:.4f} | "
-                f"Align(V/L/A): {epoch_metrics['loss_align_vis']:.3f}/{epoch_metrics['loss_align_lang']:.3f}/{epoch_metrics['loss_align_act']:.3f} | "
-                f"Tau(V/L/A): {epoch_metrics['tau_vis']:.3f}/{epoch_metrics['tau_lang']:.3f}/{epoch_metrics['tau_act']:.3f}"
-            )
-
-    # Save Aligned Autoencoder & Aligner Checkpoint
-    save_path = os.path.join(output_dir, "aligned_weight_autoencoder.pt")
-    torch.save({
-        "autoencoder_state": autoencoder.state_dict(),
-        "aligner_state": aligner.state_dict(),
-        "config": {
-            "num_layers": num_layers,
-            "rank": rank,
-            "hidden_dim": hidden_dim,
-            "d_latent": d_latent,
-            "num_tasks": num_tasks,
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    atomic_write(output / "alignment_params.msgpack", flax.serialization.to_bytes(best_params))
+    np.savez_compressed(output / "linear_mappers.npz", **mapper_payload)
+    np.savez_compressed(output / "empirical_shells.npz", **shell_payload)
+    metadata = {
+        "schema_version": 1,
+        "archive": str(Path(args.archive).resolve()),
+        "archive_sha256": __import__("hashlib").sha256(Path(args.archive).read_bytes()).hexdigest(),
+        "archive_manifest_sha256": __import__("hashlib").sha256(
+            archive_manifest_path.read_bytes()
+        ).hexdigest(),
+        "base_sha256": archive_manifest["base_sha256"],
+        "adapter_spec_sha256": archive_manifest["adapter_spec_sha256"],
+        "adapter_spec": archive_manifest["adapter_spec"],
+        "held_out_suite": archive_manifest["held_out_suite"],
+        "validation_task_indices": archive_manifest["validation_task_indices"],
+        "best_validation_loss": best_validation,
+        "selected_ridge_alphas": selected_alphas,
+        "model": {
+            "token_width": token_width,
+            "latent_dim": args.latent_dim,
+            "hidden_dim": args.hidden_dim,
+            "layers": args.layers,
+            "heads": args.heads,
+            "batch_size": args.batch_size,
+            "gradient_accumulation": args.gradient_accumulation,
+            "patience": args.patience,
+            "contrastive_weight": args.contrastive_weight,
         },
-    }, save_path)
-    print(f"\n[SUCCESS] Aligned Weight Autoencoder saved to: {save_path}")
+        "history": history,
+    }
+    atomic_write(output / "metadata.json", json.dumps(metadata, indent=2, sort_keys=True).encode())
+    print(json.dumps({"ok": True, "output": str(output), "best_validation_loss": best_validation}, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints/model_zoo")
-    parser.add_argument("--output_dir", type=str, default="./checkpoints/weight_alignment")
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=5e-4)
-    args = parser.parse_args()
-
-    train_alignment(
-        checkpoint_dir=args.checkpoint_dir,
-        output_dir=args.output_dir,
-        num_epochs=args.epochs,
-        lr=args.lr,
-    )
+    raise SystemExit(main())

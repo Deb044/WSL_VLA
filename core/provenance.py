@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 
-from .contracts import RunManifest
+from core.contracts import RunManifest
 
 
 def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
@@ -48,15 +48,18 @@ def sha256_array_tree(tree: Mapping[str, Any]) -> str:
 
 def git_state(repository: str | Path) -> tuple[str, bool]:
     root = str(repository)
-    commit = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=root, text=True
-    ).strip()
-    dirty = bool(
-        subprocess.check_output(
-            ["git", "status", "--porcelain"], cwd=root, text=True
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL
         ).strip()
-    )
-    return commit, dirty
+        dirty = bool(
+            subprocess.check_output(
+                ["git", "status", "--porcelain"], cwd=root, text=True, stderr=subprocess.DEVNULL
+            ).strip()
+        )
+        return commit, dirty
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return "unknown", False
 
 
 def capture_environment(packages: Iterable[str]) -> dict[str, str]:

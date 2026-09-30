@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from wsl_vla.research.metrics import (
+from core.metrics import (
     average_forgetting,
     average_success_rate,
     bootstrap_correlation,

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from wsl_vla.research.alignment_eval import alignment_advantage_gate
+from models.alignment_eval import alignment_advantage_gate
 
 
 def test_alignment_gate_requires_both_retrieval_and_mapping_improvement():

@@ -14,6 +14,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from wsl_vla.research.packing import load_packed_adapter
+from wsl_vla.research.evidence_io import load_task_evidence
 from wsl_vla.research.protocol import REQUIRED_SUITES
 
 
@@ -86,13 +87,19 @@ def main() -> int:
         if spec_digest != expected_spec:
             raise ValueError("population contains incompatible adapter specifications")
 
-        with np.load(evidence_path, allow_pickle=False) as evidence_archive:
-            required = {"vision_features", "vision_mask", "language_features", "action_features"}
-            if required - set(evidence_archive.files):
-                raise ValueError(f"evidence arrays missing from {sample_dir}")
-            evidence = {name: evidence_archive[name] for name in required}
-        if not all(np.isfinite(value).all() for value in evidence.values()):
-            raise ValueError(f"evidence contains non-finite values: {sample_dir}")
+        evidence_record = load_task_evidence(evidence_path)
+        if evidence_record.task_id != metadata.get("task_id"):
+            raise ValueError(f"evidence task identity differs in {sample_dir}")
+        if evidence_record.suite != metadata.get("suite"):
+            raise ValueError(f"evidence suite identity differs in {sample_dir}")
+        if evidence_record.vision_mask is None:
+            raise ValueError(f"visual evidence mask is required: {sample_dir}")
+        evidence = {
+            "vision_features": evidence_record.vision_features,
+            "vision_mask": evidence_record.vision_mask,
+            "language_features": evidence_record.language_features,
+            "action_features": evidence_record.action_statistics,
+        }
         task_id = metadata["task_id"]
         task_labels.setdefault(task_id, len(task_labels))
         samples.append((packed, evidence, metadata, task_labels[task_id]))

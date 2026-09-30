@@ -160,6 +160,7 @@ class LatentStageResult:
     final_regularization_loss: float
     latent_drift: Mapping[str, float]
     adapter_bytes: int
+    update_steps: int
 
 
 def train_shared_latent_stage(
@@ -208,4 +209,5 @@ def train_shared_latent_stage(
         final_regularization_loss=float(final["regularizer"]),
         latent_drift=drift,
         adapter_bytes=tree_nbytes(host_state),
+        update_steps=len(history),
     )

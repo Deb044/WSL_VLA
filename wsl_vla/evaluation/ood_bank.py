@@ -13,7 +13,6 @@ from ..adapters.packing import load_packed_adapter
 from ..alignment.checkpoint import encode_evidence_prompts, encode_weight_tokens
 from ..alignment.evidence_io import load_task_evidence
 from ..contracts import AlignmentCheckpoint
-from ..experiments.provenance import sha256_file
 from .ood import MODALITIES, OODReferenceBank, aggregate_reference_adapters
 
 
@@ -24,13 +23,6 @@ class OODReferenceBankArtifact:
     adapter_spec_sha256: str
     alignment_checkpoint_sha256: str
     source_sample_count: int
-
-
-def _suite_from_task_id(task_id: str) -> str:
-    suite, separator, index = task_id.rpartition("_")
-    if not separator or not index.isdigit() or not suite:
-        raise ValueError(f"invalid LIBERO task identity: {task_id}")
-    return suite
 
 
 def build_reference_bank_from_population(

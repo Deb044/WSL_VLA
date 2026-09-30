@@ -175,6 +175,20 @@ success-rate drop uses both Pearson and Spearman coefficients with bootstrap
 A failed gate stops later compute. Negative scientific outcomes are retained in
 the records and reported; they are not filtered out of the final analysis.
 
+After all 96 continual runs (four suites × three seeds × eight conditions)
+finish, the complete study is validated and summarized with:
+
+```bash
+python scripts/report_publication_study.py research_results/continual/ten_task_study \
+  --output-json research_results/reports/continual_study.json \
+  --output-parquet research_results/reports/continual_records.parquet
+```
+
+This command rejects missing cells, mixed run identities, inconsistent rollout
+budgets, or absent conditions. Confidence intervals resample suite folds and
+training seeds as crossed factors. Undefined normalized NBT caused by all-zero
+initial task success is stored as null with an explicit excluded-run count.
+
 Gate 3 is executable as:
 
 ```bash

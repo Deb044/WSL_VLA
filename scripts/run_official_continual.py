@@ -114,33 +114,44 @@ def _validate_alignment_checkpoint(checkpoint, *, suite: str, bundle, aligned: b
     return spec
 
 
-def _task_stream(
+def _task_streams(
     *,
     task_id: str,
     instruction: str,
     data_file: Path,
     config: Mapping[str, Any],
     bundle: Any,
-) -> TaskTrainingStream:
+    require_validation: bool,
+) -> tuple[TaskTrainingStream, TaskTrainingStream | None]:
     dataset = StrictLiberoHDF5(
         data_file,
         require_wrist_camera=bool(config["data"]["require_wrist_camera"]),
         required_proprio_keys=tuple(config["data"]["proprio_keys"]),
     )
     split = dataset.split(seed=int(config["data"]["split_seed"]))
-    episodes = tuple(dataset.iter_episodes(split.train))
-    normalization = ActionNormalization.fit(episodes)
+    training_episodes = tuple(dataset.iter_episodes(split.train))
+    validation_episodes = (
+        tuple(dataset.iter_episodes(split.validation)) if require_validation else ()
+    )
+    if require_validation and not validation_episodes:
+        raise ValueError("latent early stopping requires validation episodes")
+    normalization = ActionNormalization.fit(training_episodes)
     example = bundle.pretrained_model.example_batch
     observation = example["observation"]
     primary = np.asarray(observation["image_primary"])
-    return TaskTrainingStream(
+    common = dict(
         task_id=task_id,
         instruction=instruction,
-        episodes=episodes,
         normalization=normalization,
         window_size=int(np.asarray(observation["timestep_pad_mask"]).shape[1]),
         action_horizon=int(np.asarray(example["action"]).shape[-2]),
         image_size=(int(primary.shape[-3]), int(primary.shape[-2])),
+    )
+    return (
+        TaskTrainingStream(episodes=training_episodes, **common),
+        TaskTrainingStream(episodes=validation_episodes, **common)
+        if require_validation
+        else None,
     )
 
 
@@ -222,6 +233,8 @@ def _save_stage(
         "latent_drift": dict(update.latent_drift),
         "task_loss": update.task_loss,
         "regularization_loss": update.regularization_loss,
+        "update_steps": update.update_steps,
+        "micro_steps": update.micro_steps,
     }
     _atomic_bytes(
         directory / "metadata.json",
@@ -350,6 +363,7 @@ def main() -> int:
             "rollouts_per_cell": rollouts,
             "gamma_selection": str(Path(args.gamma_selection).resolve()),
             "gamma_selection_sha256": sha256_file(args.gamma_selection),
+            "early_stopping_patience": selection.early_stopping_patience,
         },
         hardware=capture_hardware(),
         environment=capture_environment(("jax", "flax", "optax", "octo", "libero")),
@@ -386,12 +400,13 @@ def main() -> int:
         return path
 
     def train_stage(previous: PolicyState, task_id: str, stage: int):
-        stream = _task_stream(
+        stream, validation_stream = _task_streams(
             task_id=task_id,
             instruction=suite_tasks[stage],
             data_file=data_files[stage],
             config=config,
             bundle=bundle,
+            require_validation=condition.optimization_space == "latent",
         )
         normalizations[task_id] = stream.normalization
         replay = ()
@@ -433,6 +448,8 @@ def main() -> int:
             task_evidence = load_task_evidence(evidence_path(task_id, stage))
             if task_evidence.task_id != task_id or task_evidence.suite != args.suite:
                 raise ValueError("evidence identity differs from the current task")
+            if task_evidence.vision_mask is None:
+                raise ValueError("latent continual training requires a visual evidence mask")
             if task_evidence.raw_feature_references.get("dataset_sha256") != dataset_hashes[task_id]:
                 raise ValueError("evidence and continual run use different task data")
             if task_evidence.raw_feature_references.get("base_sha256") != bundle.base_sha256:
@@ -468,6 +485,27 @@ def main() -> int:
                     counter += 1
                     yield batch, batch_key
 
+            if validation_stream is None:
+                raise AssertionError("latent condition lacks validation stream")
+            validation_factory = make_octo_batch_factory(
+                validation_stream,
+                batch_size=batch_size,
+                seed=args.seed * 100 + stage + 50_000,
+                text_processor=bundle.pretrained_model.text_processor,
+                example_batch=bundle.pretrained_model.example_batch,
+            )
+            validation_key = jax.random.PRNGKey(args.seed * 100 + stage + 50_000)
+            validation_counter = 0
+
+            def validation_batches():
+                nonlocal validation_counter
+                for batch in validation_factory():
+                    batch_key = jax.random.fold_in(
+                        validation_key, validation_counter
+                    )
+                    validation_counter += 1
+                    yield batch, batch_key
+
             result = train_shared_latent_stage(
                 alignment,
                 bundle=bundle,
@@ -477,6 +515,8 @@ def main() -> int:
                 gammas=condition.gammas,
                 steps=steps,
                 learning_rate=args.learning_rate,
+                validation_batches=validation_batches,
+                early_stopping_patience=selection.early_stopping_patience,
             )
             drift = result.latent_drift
             next_state = PolicyState(result.adapter_state, result.latents)
@@ -504,6 +544,8 @@ def main() -> int:
             evidence_bytes=evidence_bytes,
             peak_vram_bytes=peak_vram,
             peak_ram_bytes=peak_ram,
+            update_steps=result.update_steps,
+            micro_steps=getattr(result, "micro_steps", result.update_steps),
         )
 
     task_index_by_id = {task_id: index for index, task_id in enumerate(task_ids)}

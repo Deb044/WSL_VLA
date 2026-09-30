@@ -26,6 +26,8 @@ class GammaValidationRecord:
     negative_backward_transfer: float
     validation_task_ids: Sequence[str]
     rollout_count: int
+    stage_update_steps: Sequence[int]
+    max_steps_per_stage: int
     alignment_checkpoint_sha256: str
     synthetic: bool = False
     schema_version: int = 1
@@ -55,6 +57,20 @@ class GammaValidationRecord:
             raise ValueError("patience and rollout count must be positive")
         if len(self.validation_task_ids) != 2 or len(set(self.validation_task_ids)) != 2:
             raise ValueError("each source suite must use exactly two locked validation tasks")
+        if tuple(self.validation_task_ids) != (
+            f"{self.source_suite}_8",
+            f"{self.source_suite}_9",
+        ):
+            raise ValueError("gamma records must use locked source task indices 8 and 9")
+        if (
+            self.max_steps_per_stage <= 0
+            or len(self.stage_update_steps) != len(self.validation_task_ids)
+            or any(
+                int(value) <= 0 or int(value) > self.max_steps_per_stage
+                for value in self.stage_update_steps
+            )
+        ):
+            raise ValueError("gamma records require valid early-stopped step counts")
         if not 0 <= self.average_success_rate <= 1:
             raise ValueError("validation success rate must lie in [0, 1]")
         if not np.isfinite(self.negative_backward_transfer):
@@ -80,16 +96,23 @@ def append_gamma_validation_record(
 
 def load_gamma_validation_records(path: str | Path) -> tuple[GammaValidationRecord, ...]:
     records = []
-    with Path(path).open("r", encoding="utf-8") as stream:
-        for line_number, line in enumerate(stream, 1):
-            if not line.strip():
-                continue
-            try:
-                record = GammaValidationRecord(**json.loads(line))
-                record.validate()
-            except Exception as exc:
-                raise ValueError(f"invalid gamma validation record on line {line_number}") from exc
-            records.append(record)
+    source = Path(path)
+    files = tuple(sorted(source.rglob("gamma_validation.jsonl"))) if source.is_dir() else (source,)
+    if not files:
+        raise FileNotFoundError(f"no gamma_validation.jsonl records below {source}")
+    for file in files:
+        with file.open("r", encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                try:
+                    record = GammaValidationRecord(**json.loads(line))
+                    record.validate()
+                except Exception as exc:
+                    raise ValueError(
+                        f"invalid gamma validation record in {file} line {line_number}"
+                    ) from exc
+                records.append(record)
     if not records:
         raise ValueError("gamma validation record file is empty")
     return tuple(records)
@@ -121,6 +144,8 @@ def select_gamma_configuration(
     identities = set()
     grouped: dict[tuple, list[GammaValidationRecord]] = {}
     alignment_hashes = set()
+    rollout_counts = set()
+    maximum_steps = set()
     for record in values:
         record.validate()
         if record.source_suite not in source_suites or record.seed not in requested_seeds:
@@ -131,8 +156,12 @@ def select_gamma_configuration(
         identities.add(identity)
         grouped.setdefault(_candidate_key(record), []).append(record)
         alignment_hashes.add(record.alignment_checkpoint_sha256)
+        rollout_counts.add(record.rollout_count)
+        maximum_steps.add(record.max_steps_per_stage)
     if len(alignment_hashes) != 1:
         raise ValueError("gamma validation records use different alignment checkpoints")
+    if len(rollout_counts) != 1 or len(maximum_steps) != 1:
+        raise ValueError("gamma candidates use inconsistent rollout or maximum-step budgets")
     expected_cells = {
         (suite, seed) for suite in source_suites for seed in requested_seeds
     }
@@ -209,6 +238,8 @@ def select_gamma_configuration(
         "seeds": list(requested_seeds),
         "source_suites": list(source_suites),
         "alignment_checkpoint_sha256": next(iter(alignment_hashes)),
+        "rollout_count": next(iter(rollout_counts)),
+        "max_steps_per_stage": next(iter(maximum_steps)),
         "selection_objective": "mean_success_rate_minus_negative_backward_transfer",
         "candidate_summaries": summaries,
         "patience_summaries": patience_results,

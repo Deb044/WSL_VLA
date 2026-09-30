@@ -23,6 +23,8 @@ class StageUpdate(Generic[State]):
     evidence_bytes: int = 0
     peak_vram_bytes: int | None = None
     peak_ram_bytes: int | None = None
+    update_steps: int = 0
+    micro_steps: int = 0
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,8 @@ def run_sequential_protocol(
                 evidence_bytes=update.evidence_bytes,
                 peak_vram_bytes=update.peak_vram_bytes,
                 peak_ram_bytes=update.peak_ram_bytes,
+                training_update_steps=update.update_steps,
+                training_micro_steps=update.micro_steps,
             )
             _ = record.success_rate
             records.append(record)
@@ -189,6 +193,8 @@ def run_independent_oracle_protocol(
                 evidence_bytes=selected.evidence_bytes,
                 peak_vram_bytes=selected.peak_vram_bytes,
                 peak_ram_bytes=selected.peak_ram_bytes,
+                training_update_steps=selected.update_steps,
+                training_micro_steps=selected.micro_steps,
             )
             _ = record.success_rate
             records.append(record)

@@ -225,6 +225,8 @@ class EvaluationRecord:
     evidence_bytes: int = 0
     peak_vram_bytes: int | None = None
     peak_ram_bytes: int | None = None
+    training_update_steps: int = 0
+    training_micro_steps: int = 0
     component_swap_condition: str | None = None
     failure: Mapping[str, Any] | None = None
     schema_version: int = SCHEMA_VERSION
@@ -247,6 +249,11 @@ class EvaluationRecord:
             raise ValueError("training and evaluation wall times cannot be negative")
         if min(self.adapter_bytes, self.evidence_bytes) < 0:
             raise ValueError("memory sizes cannot be negative")
+        if (
+            self.training_update_steps < 0
+            or self.training_micro_steps < self.training_update_steps
+        ):
+            raise ValueError("training step counts are inconsistent")
         return self.successes / self.rollout_count
 
 

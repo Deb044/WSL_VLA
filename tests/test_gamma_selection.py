@@ -29,6 +29,8 @@ def records_for(family, gammas, patience, score):
                     negative_backward_transfer=0.1,
                     validation_task_ids=(f"{suite}_8", f"{suite}_9"),
                     rollout_count=20,
+                    stage_update_steps=(100, 80),
+                    max_steps_per_stage=100,
                     alignment_checkpoint_sha256="a" * 64,
                 )
             )

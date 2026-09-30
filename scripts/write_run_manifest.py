@@ -10,10 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.contracts import RunManifest
-from wsl_vla.research.data import load_suite_manifest
-from wsl_vla.research.protocol import load_yaml, validate_reference_tasks, validate_research_config
-from wsl_vla.research.provenance import (
+from wsl_vla.contracts import RunManifest
+from wsl_vla.data.libero import load_suite_manifest
+from wsl_vla.experiments.protocol import load_yaml, validate_reference_tasks, validate_research_config
+from wsl_vla.experiments.provenance import (
     capture_environment,
     capture_hardware,
     git_state,

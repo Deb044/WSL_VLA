@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .flax_adapters import apply_dense_kernel_updates, apply_external_adapters, path_string
+from ..adapters.flax import apply_dense_kernel_updates, apply_external_adapters, path_string
 
 
 def _imports():

@@ -1,10 +1,10 @@
-"""Research-grade Methodology 1 implementation.
+"""Official Octo/JAX implementation of Methodology 1.
 
-The legacy ``models`` and ``scripts`` packages are retained for CPU smoke tests.
-Publication experiments must import from :mod:`wsl_vla.research`.
+The package is organized by responsibility. The former PyTorch surrogate is
+isolated under :mod:`wsl_vla.smoke.legacy_torch` and is never a research path.
 """
 
-from .research.contracts import (
+from .contracts import (
     AdapterEntry,
     AdapterSpec,
     AlignmentCheckpointMetadata,

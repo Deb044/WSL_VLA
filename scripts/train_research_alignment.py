@@ -18,9 +18,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.mapping import fit_linear_ridge_mapper
-from wsl_vla.research.protocol import load_yaml, validate_research_config
-from wsl_vla.research.sampling import task_balanced_index_batches
+from wsl_vla.alignment.mapping import fit_linear_ridge_mapper
+from wsl_vla.experiments.protocol import load_yaml, validate_research_config
+from wsl_vla.experiments.sampling import task_balanced_index_batches
 
 
 REQUIRED_ARRAYS = {
@@ -104,7 +104,7 @@ def main() -> int:
     except ImportError as exc:
         raise RuntimeError("install requirements-research.txt in WSL2 before alignment training") from exc
 
-    from wsl_vla.research.jax_modules import (
+    from wsl_vla.alignment.models import (
         AlignmentSystem,
         estimate_empirical_shell,
         masked_reconstruction_loss,

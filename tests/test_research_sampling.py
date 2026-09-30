@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from wsl_vla.research.sampling import task_balanced_index_batches
+from wsl_vla.experiments.sampling import task_balanced_index_batches
 
 
 def test_batches_have_multiple_tasks_and_multiple_positives():

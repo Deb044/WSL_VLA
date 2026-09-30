@@ -5,16 +5,16 @@ from dataclasses import asdict
 import numpy as np
 import pytest
 
-from wsl_vla.research.contracts import AdapterEntry, AdapterSpec, Component
-from wsl_vla.research.mapping import fit_linear_ridge_mapper
-from wsl_vla.research.packing import (
+from wsl_vla.adapters.packing import (
     load_packed_adapter,
     PackedAdapterMetadata,
     pack_low_rank_adapter,
     save_packed_adapter,
     unpack_effective_updates,
 )
-from wsl_vla.research.protocol import (
+from wsl_vla.alignment.mapping import fit_linear_ridge_mapper
+from wsl_vla.contracts import AdapterEntry, AdapterSpec, Component
+from wsl_vla.experiments.protocol import (
     expand_population_runs,
     load_yaml,
     publication_folds,

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Callable, Generic, Mapping, Sequence, TypeVar
 
-from .contracts import EvaluationRecord
+from ..contracts import EvaluationRecord
 
 
 State = TypeVar("State")

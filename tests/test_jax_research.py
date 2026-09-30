@@ -14,7 +14,7 @@ def test_task_loss_produces_nonzero_gradients_for_all_modalities():
     import jax
     import jax.numpy as jnp
 
-    from wsl_vla.research.jax_modules import assert_task_loss_gradients, refine_latents
+    from wsl_vla.alignment.models import assert_task_loss_gradients, refine_latents
 
     initial = {
         "vision": jnp.ones((2, 3)),

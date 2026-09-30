@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .contracts import AdapterSpec
-from .octo_training import (
+from ..contracts import AdapterSpec
+from ..octo.training import (
     extract_decoded_transformer_params,
     initial_adapter_state,
     octo_diffusion_loss,

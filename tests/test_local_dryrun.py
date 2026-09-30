@@ -18,8 +18,8 @@ import torch
 # Ensure repository root is on Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models import build_vla_model, TaskEvidenceExtractor
-from data.dataset import LiberoTaskDataset
+from wsl_vla.smoke.legacy_torch.data import LiberoTaskDataset
+from wsl_vla.smoke.legacy_torch.models import build_vla_model, TaskEvidenceExtractor
 
 
 def test_vla_factory_and_octo_small():

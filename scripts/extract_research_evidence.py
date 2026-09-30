@@ -13,27 +13,27 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.contracts import TaskEvidence
-from wsl_vla.research.data import StrictLiberoHDF5
-from wsl_vla.research.evidence import masked_action_statistics
-from wsl_vla.research.evidence_io import save_task_evidence
-from wsl_vla.research.octo_batches import (
+from wsl_vla.alignment.evidence import masked_action_statistics
+from wsl_vla.alignment.evidence_io import save_task_evidence
+from wsl_vla.alignment.octo_evidence import (
+    extract_frozen_octo_tokenizer_features,
+    flatten_visual_token_groups,
+)
+from wsl_vla.contracts import TaskEvidence
+from wsl_vla.data.libero import StrictLiberoHDF5
+from wsl_vla.data.octo_batches import (
     ActionNormalization,
     collate_octo_examples,
     conform_batch_to_octo_example,
     iter_octo_examples,
 )
-from wsl_vla.research.octo_bridge import load_research_octo
-from wsl_vla.research.octo_evidence import (
-    extract_frozen_octo_tokenizer_features,
-    flatten_visual_token_groups,
-)
-from wsl_vla.research.protocol import (
+from wsl_vla.experiments.protocol import (
     load_yaml,
     validate_reference_tasks,
     validate_research_config,
 )
-from wsl_vla.research.provenance import sha256_file
+from wsl_vla.experiments.provenance import sha256_file
+from wsl_vla.octo.bridge import load_research_octo
 
 
 def _sample_episode_examples(

@@ -9,7 +9,7 @@ from typing import Iterable
 
 import numpy as np
 
-from .contracts import EvaluationRecord
+from ..contracts import EvaluationRecord
 
 
 def append_evaluation_record(record: EvaluationRecord, path: str | Path) -> None:

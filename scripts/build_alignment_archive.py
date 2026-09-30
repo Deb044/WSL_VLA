@@ -13,9 +13,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.packing import load_packed_adapter
-from wsl_vla.research.evidence_io import load_task_evidence
-from wsl_vla.research.protocol import REQUIRED_SUITES
+from wsl_vla.adapters.packing import load_packed_adapter
+from wsl_vla.alignment.evidence_io import load_task_evidence
+from wsl_vla.experiments.protocol import REQUIRED_SUITES
 
 
 def main() -> int:

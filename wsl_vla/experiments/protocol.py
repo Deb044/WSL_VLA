@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from .splits import SuiteFold, leave_one_suite_out_folds
+from ..data.splits import SuiteFold, leave_one_suite_out_folds
 
 
 REQUIRED_SUITES = (

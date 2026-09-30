@@ -4,7 +4,7 @@ from dataclasses import fields
 
 import pytest
 
-from wsl_vla.research.octo_bridge import ResearchOctoBundle, _group_component
+from wsl_vla.octo.bridge import ResearchOctoBundle, _group_component
 
 
 @pytest.mark.parametrize(

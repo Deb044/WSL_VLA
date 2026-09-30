@@ -7,7 +7,7 @@ from typing import Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
-from .data import LiberoEpisode
+from .libero import LiberoEpisode
 
 
 @dataclass(frozen=True)

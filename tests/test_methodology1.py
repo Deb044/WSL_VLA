@@ -17,7 +17,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models import (
+from wsl_vla.smoke.legacy_torch.models import (
     FactorizedWeightAutoencoder,
     ModalityContrastiveAligner,
     DifferentialRegularizer,

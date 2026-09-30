@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.octo_bridge import (
+from wsl_vla.octo.bridge import (
     OCTO_GIT_REVISION,
     adapter_parameter_paths,
     assert_zero_adapter_equivalence,

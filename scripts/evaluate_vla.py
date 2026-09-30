@@ -25,8 +25,8 @@ from torch.utils.data import DataLoader
 # Add repo root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models import build_vla_model
-from data.dataset import LiberoTaskDataset
+from wsl_vla.smoke.legacy_torch.data import LiberoTaskDataset
+from wsl_vla.smoke.legacy_torch.models import build_vla_model
 from wsl_vla.smoke_guard import require_explicit_smoke_test
 
 

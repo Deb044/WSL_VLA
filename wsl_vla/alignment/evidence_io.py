@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .contracts import SCHEMA_VERSION, TaskEvidence
+from ..contracts import SCHEMA_VERSION, TaskEvidence
 
 
 def save_task_evidence(evidence: TaskEvidence, path: str | Path) -> None:

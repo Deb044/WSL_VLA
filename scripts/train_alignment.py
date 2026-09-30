@@ -23,7 +23,7 @@ from torch.utils.data import Dataset, DataLoader
 # Repo root
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models import FactorizedWeightAutoencoder, ModalityContrastiveAligner
+from wsl_vla.smoke.legacy_torch.models import FactorizedWeightAutoencoder, ModalityContrastiveAligner
 from wsl_vla.smoke_guard import require_explicit_smoke_test, write_smoke_marker
 
 

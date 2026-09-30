@@ -5,8 +5,8 @@ import json
 import numpy as np
 import pytest
 
-from wsl_vla.research.contracts import TaskEvidence
-from wsl_vla.research.evidence_io import load_task_evidence, save_task_evidence
+from wsl_vla.alignment.evidence_io import load_task_evidence, save_task_evidence
+from wsl_vla.contracts import TaskEvidence
 
 
 def make_evidence(*, synthetic: bool = False) -> TaskEvidence:

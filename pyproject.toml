@@ -3,8 +3,8 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "wsl-vla-research"
-version = "0.1.0"
+name = "wsl-vla"
+version = "0.2.0"
 description = "Reproducible weight-space alignment experiments for continual VLA learning"
 requires-python = ">=3.10,<3.12"
 dependencies = [

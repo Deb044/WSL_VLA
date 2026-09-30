@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from wsl_vla.research.octo_evidence import (
+from wsl_vla.alignment.octo_evidence import (
     flatten_visual_token_groups,
     masked_pool_tokens,
 )

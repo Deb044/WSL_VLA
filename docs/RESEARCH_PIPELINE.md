@@ -2,12 +2,13 @@
 
 ## 1. Evidence boundary
 
-Only code under `wsl_vla/research` and the explicit JAX entry points documented
-below belong to the publication path. In particular,
+The functional subpackages under `wsl_vla/` are the primary publication path:
+`octo`, `adapters`, `alignment`, `data`, `evaluation`, and `experiments`. In particular,
 `scripts/run_research_benchmark.py` is a deprecated legacy fixture despite its
 historical filename. Every legacy PyTorch command now requires `--smoke-test`,
 writes under `smoke_results/`, and marks artifacts as publication-ineligible.
-The legacy model is a custom analogue, not Octo-Small.
+The custom analogue is isolated under `wsl_vla/smoke/legacy_torch`; it is not
+Octo-Small.
 
 The official path does not silently generate samples, download an unpinned base,
 reuse a task-specific latent during shared-policy evaluation, or report an
@@ -20,7 +21,7 @@ used to infer task identity or order.
 
 ## 2. Model and adapter design
 
-`octo_bridge.install_octo_modality_patch` replaces Octo's internal
+`wsl_vla.octo.bridge.install_octo_modality_patch` replaces Octo's internal
 `BlockTransformer` before constructing the research model. It retains all
 official parameter paths and adds three rank-r residual updates after each
 transformer block:

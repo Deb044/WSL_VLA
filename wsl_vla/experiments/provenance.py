@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 
-from .contracts import RunManifest
+from ..contracts import RunManifest
 
 
 def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:

@@ -7,12 +7,12 @@ import h5py
 import numpy as np
 import pytest
 
-from wsl_vla.research.data import (
+from wsl_vla.data.libero import (
     StrictLiberoHDF5,
     forbid_synthetic_research_output,
     load_suite_manifest,
 )
-from wsl_vla.research.splits import split_episodes
+from wsl_vla.data.splits import split_episodes
 
 
 def make_hdf5(path: Path, episodes: int = 10) -> None:

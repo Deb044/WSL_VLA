@@ -12,8 +12,8 @@ rollout-based continual-learning metrics.
 The repository also retains its original PyTorch policy analogue for fast smoke
 tests. That model does not implement official Octo and is explicitly excluded
 from research claims. The fastest onboarding path is `README.md`,
-`docs/RESEARCH_PIPELINE.md`, `configs/research/base.yaml`, then the modules under
-`wsl_vla/research`.
+`docs/RESEARCH_PIPELINE.md`, `configs/research/base.yaml`, then the functional
+subpackages under `wsl_vla/`.
 
 ### Scope and evidence
 
@@ -54,12 +54,12 @@ LIBERO/MuJoCo. PyTorch/PEFT remains a legacy smoke dependency only.
 
 | Path | Purpose | Research status |
 |---|---|---|
-| `wsl_vla/research/` | Contracts, packing, strict data, Octo patch, JAX alignment/refinement, mapping, metrics, provenance | Publication path |
+| `wsl_vla/octo/`, `adapters/`, `alignment/` | Official Octo integration, adapter representation, and WeightCLIP-style alignment | Publication path |
+| `wsl_vla/data/`, `evaluation/`, `experiments/` | Strict LIBERO data, deterministic rollouts/metrics, and locked provenance protocols | Publication path |
 | `configs/research/` | Pinned model, population, folds, ablations, rollouts, outputs | Publication path |
 | `configs/reference_tasks.yaml` | Exact four ten-task orders from the continual-VLA paper | Publication path |
 | `scripts/*research*`, `verify_official_octo.py` | Preflight, archive assembly, alignment training, and reporting | Publication path |
-| `models/`, older scripts | Custom PyTorch policy and earlier experiment scaffold | Smoke tests only |
-| `data/dataset.py` | Legacy loader; now fails closed unless synthetic data is explicitly allowed | Smoke/compatibility |
+| `wsl_vla/smoke/legacy_torch/` | Quarantined custom PyTorch policy and legacy dataset scaffold | Smoke tests only |
 | `tests/` | Pure-Python correctness tests plus optional JAX gradient checks | Verification |
 | `docs/` | Method description, compute estimates, and executable research contract | Documentation |
 

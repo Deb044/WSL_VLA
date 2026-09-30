@@ -8,10 +8,10 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .contracts import AdapterSpec, AlignmentCheckpoint
-from .jax_modules import AlignmentSystem, EmpiricalShell, project_to_empirical_shell, refine_latents
-from .latent_adapter import decoded_token_task_loss
+from ..adapters.latent import decoded_token_task_loss
+from ..contracts import AdapterSpec, AlignmentCheckpoint
 from .mapping import LinearRidgeMapper
+from .models import AlignmentSystem, EmpiricalShell, project_to_empirical_shell, refine_latents
 
 
 COMPONENT_INDEX = {"vision": 0, "language": 1, "action": 2}

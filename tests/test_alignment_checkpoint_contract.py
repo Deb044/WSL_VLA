@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from wsl_vla.research.contracts import AlignmentCheckpoint
+from wsl_vla.contracts import AlignmentCheckpoint
 
 
 def make_checkpoint():

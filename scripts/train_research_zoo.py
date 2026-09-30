@@ -14,31 +14,31 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.data import StrictLiberoHDF5, load_suite_manifest
-from wsl_vla.research.evidence_io import load_task_evidence
-from wsl_vla.research.octo_batches import (
+from wsl_vla.adapters.packing import (
+    PackedAdapterMetadata,
+    pack_low_rank_adapter,
+    save_packed_adapter,
+)
+from wsl_vla.alignment.evidence_io import load_task_evidence
+from wsl_vla.data.libero import StrictLiberoHDF5, load_suite_manifest
+from wsl_vla.data.octo_batches import (
     ActionNormalization,
     collate_octo_examples,
     conform_batch_to_octo_example,
     iter_octo_examples,
 )
-from wsl_vla.research.octo_bridge import (
+from wsl_vla.octo.bridge import (
     assert_zero_adapter_equivalence,
     build_adapter_spec_and_factors,
     load_research_octo,
 )
-from wsl_vla.research.octo_training import adapter_value_and_grad, initial_adapter_state
-from wsl_vla.research.packing import (
-    PackedAdapterMetadata,
-    pack_low_rank_adapter,
-    save_packed_adapter,
-)
-from wsl_vla.research.protocol import (
+from wsl_vla.octo.training import adapter_value_and_grad, initial_adapter_state
+from wsl_vla.experiments.protocol import (
     load_yaml,
     validate_reference_tasks,
     validate_research_config,
 )
-from wsl_vla.research.provenance import sha256_file
+from wsl_vla.experiments.provenance import sha256_file
 
 
 def _epoch_batches(

@@ -1,13 +1,22 @@
 # WSL_VLA: Weight-Space Alignment for Continual Robot Learning
 
-This repository now has two deliberately separate paths:
+The official Methodology 1 implementation is the primary `wsl_vla` package. It
+is organized by responsibility (`octo`, `adapters`, `alignment`, `data`,
+`evaluation`, and `experiments`) rather than living in a parallel research
+sidecar. The former PyTorch policy analogue is quarantined under
+`wsl_vla/smoke/legacy_torch`; it is retained only for fast plumbing checks and
+must not be used for papers, benchmark tables, or claims about pretrained VLAs.
 
-1. **Official research path (`wsl_vla/research`)** - pinned Octo-Small 1.5,
-   JAX/Flax, strict real LIBERO data, versioned adapter/evidence contracts,
-   rollout-based continual-learning records, and fail-closed provenance checks.
-2. **Legacy smoke path (`models`, older scripts)** - a small PyTorch policy analogue
-   retained for shape and plumbing checks. It is not official Octo and must not be
-   used for papers, benchmark tables, or claims about pretrained VLAs.
+```text
+wsl_vla/
+├── octo/          # official pinned Octo loading and adapter-only training
+├── adapters/      # adapter schema, packing, and decoded weight injection
+├── alignment/     # evidence encoders, WeightCLIP losses, mapping, and shells
+├── data/          # strict real-LIBERO loading and Octo batch construction
+├── evaluation/    # simulator rollouts, continual metrics, swaps, and records
+├── experiments/   # locked protocols, splits, sampling, and provenance
+└── smoke/         # explicitly non-publishable legacy PyTorch fixtures
+```
 
 ## Scientific scope
 
@@ -76,6 +85,8 @@ gates, and interpretation rules.
   ridge prompt-to-latent mapper.
 - Exact SR, NBT, normalized NBT, forgetting, forward-transfer, recovery, and
   bootstrap correlation utilities.
+- Deterministic official-LIBERO rollout plumbing with fixed initialization
+  identities and official Octo action sampling.
 - Immutable rollout record and run-manifest schemas.
 
 ## Alignment archive and training

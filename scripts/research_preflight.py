@@ -13,20 +13,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wsl_vla.research.data import (
+from wsl_vla.data.libero import (
     StrictLiberoHDF5,
     forbid_synthetic_research_output,
     load_suite_manifest,
 )
-from wsl_vla.research.octo_bridge import OCTO_GIT_REVISION
-from wsl_vla.research.protocol import (
+from wsl_vla.experiments.protocol import (
     expand_population_runs,
     load_yaml,
     publication_folds,
     validate_reference_tasks,
     validate_research_config,
 )
-from wsl_vla.research.provenance import capture_environment, capture_hardware, sha256_file
+from wsl_vla.experiments.provenance import capture_environment, capture_hardware, sha256_file
+from wsl_vla.octo.bridge import OCTO_GIT_REVISION
 
 
 RESEARCH_MODULES = ("jax", "flax", "optax", "octo", "h5py", "yaml")

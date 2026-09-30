@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 from peft import LoraConfig, get_peft_model
 
-from models.base_vla import BaseVLA, register_vla
+from .base_vla import BaseVLA, register_vla
 
 
 class OctoSmallLayer(nn.Module):

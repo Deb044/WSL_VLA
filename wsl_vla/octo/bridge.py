@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from .provenance import sha256_array_tree
+from ..experiments.provenance import sha256_array_tree
 
 
 OCTO_GIT_REVISION = "241fb3514b7c40957a86d869fecb7c7fc353f540"
@@ -229,7 +229,7 @@ def load_research_octo(
     )
     merged = merge_params(research.params, pretrained.params)
     research = research.replace(params=merged)
-    from .flax_adapters import (
+    from ..adapters.flax import (
         discover_diffusion_kernel_paths,
         initialize_external_adapters,
     )
@@ -255,7 +255,7 @@ def assert_zero_adapter_equivalence(bundle: ResearchOctoBundle, *, atol: float =
     """Verify that adding zero adapters leaves every transformer output unchanged."""
 
     _, jax, jnp, _, _, _, _, _ = _research_imports()
-    from .flax_adapters import apply_external_adapters
+    from ..adapters.flax import apply_external_adapters
 
     observations = bundle.pretrained_model.example_batch["observation"]
     tasks = bundle.pretrained_model.example_batch["task"]
@@ -324,8 +324,8 @@ def build_adapter_spec_and_factors(
         from flax.core import unfreeze
     except ImportError as exc:
         raise RuntimeError("Flax is required to extract Octo adapters") from exc
-    from .contracts import AdapterEntry, AdapterSpec, Component
-    from .flax_adapters import path_string
+    from ..adapters.flax import path_string
+    from ..contracts import AdapterEntry, AdapterSpec, Component
 
     flat = flax.traverse_util.flatten_dict(unfreeze(bundle.research_model.params))
     entries_and_factors = []

@@ -102,6 +102,7 @@ class CorrelationEstimate:
     ci_high: float
     sample_count: int
     method: str
+    cluster_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,7 @@ def bootstrap_correlation(
     confidence: float = 0.95,
     resamples: int = 10_000,
     seed: int = 0,
+    clusters: Sequence[Any] | None = None,
 ) -> CorrelationEstimate:
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -130,11 +132,29 @@ def bootstrap_correlation(
     if np.ptp(x) == 0 or np.ptp(y) == 0:
         raise ValueError("correlation is undefined for constant inputs")
 
+    cluster_values = None
+    unique_clusters = None
+    if clusters is not None:
+        cluster_values = np.asarray(clusters)
+        if cluster_values.ndim != 1 or cluster_values.shape != x.shape:
+            raise ValueError("bootstrap clusters must align with correlation samples")
+        unique_clusters = np.unique(cluster_values)
+        if unique_clusters.size < 2:
+            raise ValueError("cluster bootstrap requires at least two independent clusters")
+
     estimate = _correlation(x, y, method)
     rng = np.random.default_rng(seed)
     samples = []
     for _ in range(resamples):
-        indices = rng.integers(0, x.size, size=x.size)
+        if unique_clusters is None:
+            indices = rng.integers(0, x.size, size=x.size)
+        else:
+            selected_clusters = rng.choice(
+                unique_clusters, size=unique_clusters.size, replace=True
+            )
+            indices = np.concatenate(
+                [np.flatnonzero(cluster_values == value) for value in selected_clusters]
+            )
         bx, by = x[indices], y[indices]
         if np.ptp(bx) == 0 or np.ptp(by) == 0:
             continue
@@ -143,7 +163,14 @@ def bootstrap_correlation(
         raise ValueError("bootstrap produced no defined correlation samples")
     alpha = 1 - confidence
     low, high = np.quantile(samples, [alpha / 2, 1 - alpha / 2])
-    return CorrelationEstimate(estimate, float(low), float(high), x.size, method)
+    return CorrelationEstimate(
+        estimate,
+        float(low),
+        float(high),
+        x.size,
+        method,
+        None if unique_clusters is None else int(unique_clusters.size),
+    )
 
 
 def bootstrap_mean(
@@ -177,6 +204,7 @@ def aggregate_seed_metrics(
     confidence: float = 0.95,
     resamples: int = 10_000,
     bootstrap_seed: int = 0,
+    oracle_condition: str | None = None,
 ) -> tuple[dict[int, dict[str, float]], dict[str, MeanEstimate]]:
     """Calculate metrics per seed, then bootstrap uncertainty across seeds."""
 
@@ -205,7 +233,19 @@ def aggregate_seed_metrics(
             condition=condition,
             task_count=task_count,
         )
-        per_seed[value] = continual_learning_metrics(matrix)
+        independent_baseline = None
+        if oracle_condition is not None:
+            oracle = records_to_success_matrix(
+                record_tuple,
+                suite=suite,
+                seed=value,
+                condition=oracle_condition,
+                task_count=task_count,
+            )
+            independent_baseline = np.diag(oracle)
+        per_seed[value] = continual_learning_metrics(
+            matrix, independent_baseline=independent_baseline
+        )
     names = tuple(next(iter(per_seed.values())))
     aggregate = {
         name: bootstrap_mean(
@@ -260,7 +300,7 @@ def drift_degradation_correlations(
         by_run[run_key][cell] = record
 
     samples = []
-    for run_key, cells in by_run.items():
+    for cluster_index, (run_key, cells) in enumerate(sorted(by_run.items())):
         for stage in sorted({stage for stage, _ in cells}):
             if stage == 0:
                 continue
@@ -277,11 +317,14 @@ def drift_degradation_correlations(
             drifts = {tuple(sorted(item.latent_drift.items())) for item in stage_records}
             if len(drifts) != 1:
                 raise ValueError("latent drift differs across cells from one training stage")
-            samples.append((dict(next(iter(drifts))), float(np.mean(drops))))
+            samples.append(
+                (dict(next(iter(drifts))), float(np.mean(drops)), cluster_index)
+            )
     if len(samples) < 3:
         raise ValueError("drift analysis requires at least three stage-transition samples")
 
     degradation = np.asarray([item[1] for item in samples], dtype=np.float64)
+    clusters = np.asarray([item[2] for item in samples], dtype=np.int64)
     result = {}
     for modality in ("vision", "language", "action"):
         drift = np.asarray([item[0][modality] for item in samples], dtype=np.float64)
@@ -293,6 +336,7 @@ def drift_degradation_correlations(
                 resamples=resamples,
                 confidence=confidence,
                 seed=seed,
+                clusters=clusters,
             )
             for method in ("pearson", "spearman")
         }

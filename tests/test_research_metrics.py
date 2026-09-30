@@ -48,6 +48,7 @@ def test_bootstrap_correlation_reports_both_methods():
     for method in ("pearson", "spearman"):
         result = bootstrap_correlation(x, y, method=method, resamples=200, seed=4)
         assert result.sample_count == 10
+        assert result.cluster_count is None
         assert result.ci_low <= result.estimate <= result.ci_high
         assert result.estimate > 0.9
 
@@ -83,6 +84,7 @@ def test_drift_correlation_uses_one_sample_per_stage_transition():
         records, condition="proposed", resamples=100, seed=3
     )
     assert result["vision"]["pearson"].sample_count == 6
+    assert result["vision"]["pearson"].cluster_count == 2
     assert result["action"]["spearman"].estimate > 0
 
 
@@ -120,6 +122,45 @@ def test_aggregate_metrics_requires_and_reports_all_independent_seeds():
     )
     assert set(per_seed) == {17, 42, 73}
     assert aggregate["average_success_rate"].sample_count == 3
+
+
+def test_aggregate_metrics_uses_independent_oracle_for_forward_transfer():
+    records = []
+    for condition, diagonal in (("shared", (8, 9)), ("oracle", (7, 8))):
+        for seed in (17, 42, 73):
+            for stage in range(2):
+                for task in range(stage + 1):
+                    successes = diagonal[task]
+                    records.append(
+                        EvaluationRecord(
+                            run_id=f"{condition}-{seed}",
+                            suite="suite",
+                            seed=seed,
+                            condition=condition,
+                            training_stage=stage,
+                            evaluated_task_index=task,
+                            evaluated_task_id=f"task-{task}",
+                            rollout_count=10,
+                            successes=successes,
+                            checkpoint_sha256="a" * 64,
+                            latent_drift={name: 0.0 for name in ("vision", "language", "action")},
+                            wall_time_seconds=1.0,
+                            initialization_indices=tuple(range(10)),
+                            rollout_seeds=tuple(range(10)),
+                            evaluation_wall_time_seconds=1.0,
+                        )
+                    )
+    per_seed, aggregate = aggregate_seed_metrics(
+        records,
+        suite="suite",
+        condition="shared",
+        seeds=(17, 42, 73),
+        task_count=2,
+        resamples=100,
+        oracle_condition="oracle",
+    )
+    assert all(values["forward_transfer"] == pytest.approx(0.1) for values in per_seed.values())
+    assert aggregate["forward_transfer"].estimate == pytest.approx(0.1)
     with pytest.raises(ValueError, match="record seeds differ"):
         aggregate_seed_metrics(
             records,

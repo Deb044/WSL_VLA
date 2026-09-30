@@ -35,6 +35,20 @@ def load_evaluation_records(path: str | Path) -> tuple[EvaluationRecord, ...]:
     return tuple(records)
 
 
+def load_evaluation_record_tree(path: str | Path) -> tuple[EvaluationRecord, ...]:
+    """Load one JSONL file or recursively collect canonical run record files."""
+
+    source = Path(path)
+    if source.is_file():
+        return load_evaluation_records(source)
+    if not source.is_dir():
+        raise FileNotFoundError(f"evaluation record path is missing: {source}")
+    files = tuple(sorted(source.rglob("evaluation.jsonl")))
+    if not files:
+        raise FileNotFoundError(f"no evaluation.jsonl files below {source}")
+    return tuple(record for file in files for record in load_evaluation_records(file))
+
+
 def append_ood_evaluation_record(record: OODEvaluationRecord, path: str | Path) -> None:
     _append_validated_record(record, path, validation=lambda item: item.success_rate)
 

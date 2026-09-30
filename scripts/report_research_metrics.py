@@ -9,6 +9,8 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from wsl_vla.evaluation.metrics import (
@@ -18,7 +20,7 @@ from wsl_vla.evaluation.metrics import (
 )
 from wsl_vla.evaluation.records import (
     export_evaluation_parquet,
-    load_evaluation_records,
+    load_evaluation_record_tree,
     records_to_success_matrix,
 )
 from wsl_vla.evaluation.reporting import plot_metric_intervals, plot_success_matrix
@@ -38,9 +40,14 @@ def main() -> int:
     parser.add_argument("--output-figure")
     parser.add_argument("--drift-correlations", action="store_true")
     parser.add_argument("--bootstrap-resamples", type=int, default=10_000)
+    parser.add_argument(
+        "--oracle-condition",
+        default="independent_adapter_oracle",
+        help="Set empty to omit forward transfer.",
+    )
     args = parser.parse_args()
 
-    records = load_evaluation_records(args.records)
+    records = load_evaluation_record_tree(args.records)
     if args.seed is not None:
         matrix = records_to_success_matrix(
             records,
@@ -54,7 +61,22 @@ def main() -> int:
             "seed": args.seed,
             "condition": args.condition,
             "success_matrix": matrix.tolist(),
-            "metrics": continual_learning_metrics(matrix),
+            "metrics": continual_learning_metrics(
+                matrix,
+                independent_baseline=(
+                    np.diag(
+                        records_to_success_matrix(
+                            records,
+                            suite=args.suite,
+                            seed=args.seed,
+                            condition=args.oracle_condition,
+                            task_count=args.task_count,
+                        )
+                    )
+                    if args.oracle_condition
+                    else None
+                ),
+            ),
         }
         if args.output_figure:
             plot_success_matrix(
@@ -70,6 +92,7 @@ def main() -> int:
             seeds=args.seeds,
             task_count=args.task_count,
             resamples=args.bootstrap_resamples,
+            oracle_condition=args.oracle_condition or None,
         )
         report = {
             "suite": args.suite,

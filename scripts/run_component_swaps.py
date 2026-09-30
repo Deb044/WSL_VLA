@@ -201,6 +201,13 @@ def main() -> int:
         seeds=(seed,),
         configuration={
             "analysis": "consecutive_component_swaps",
+            "research_config": str(Path(args.config).resolve()),
+            "research_config_sha256": sha256_file(args.config),
+            "task_config": str(Path(args.tasks).resolve()),
+            "task_config_sha256": sha256_file(args.tasks),
+            "action_normalization": {
+                task_id: normalizations[task_id].to_dict() for task_id in task_order
+            },
             "condition": condition,
             "source_run_id": source["run_id"],
             "source_manifest_sha256": sha256_file(source_manifest_path),

@@ -16,6 +16,13 @@ class ActionNormalization:
     std: np.ndarray
     count: int
 
+    def to_dict(self) -> dict:
+        return {
+            "mean": self.mean.tolist(),
+            "std": self.std.tolist(),
+            "count": int(self.count),
+        }
+
     @classmethod
     def fit(cls, episodes: Iterable[LiberoEpisode], epsilon: float = 1e-6):
         arrays = [np.asarray(episode.actions, dtype=np.float64) for episode in episodes]

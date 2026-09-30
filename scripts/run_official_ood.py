@@ -237,6 +237,10 @@ def main() -> int:
         seeds=(args.seed,),
         configuration={
             "tier": args.tier,
+            "research_config": str(Path(args.config).resolve()),
+            "research_config_sha256": sha256_file(args.config),
+            "task_config": str(Path(args.tasks).resolve()),
+            "task_config_sha256": sha256_file(args.tasks),
             "methods": OOD_METHODS,
             "matched_adaptation_steps": adaptation_steps,
             "adaptation_gradient_accumulation_steps": 1,
@@ -268,6 +272,7 @@ def main() -> int:
     cached_evidence = None
     cached_mapped = None
     cached_prompts = None
+    normalizations = {}
 
     def task_inputs(task_id: str):
         nonlocal cached_id, cached_stream, cached_evidence, cached_mapped, cached_prompts
@@ -277,6 +282,7 @@ def main() -> int:
         stream = _task_stream(
             task_id, suite_tasks[index], data_files[index], config, bundle
         )
+        normalizations[task_id] = stream.normalization
         relative = args.evidence_template.format(
             suite=args.suite, task_id=task_id, task_index=index
         )
@@ -484,6 +490,9 @@ def main() -> int:
             alignment_checkpoint_sha256=alignment_sha256,
             record_sink=lambda record: append_ood_evaluation_record(record, record_path),
         )
+        manifest.configuration["action_normalization"] = {
+            task_id: normalizations[task_id].to_dict() for task_id in task_ids
+        }
         manifest.finished_at = datetime.now(timezone.utc).isoformat()
         write_manifest_atomic(manifest, manifest_path)
         print(json.dumps({"ok": True, "run_id": run_id, "records": len(records)}, indent=2))

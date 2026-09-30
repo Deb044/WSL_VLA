@@ -374,6 +374,10 @@ def main() -> int:
         seeds=(args.seed,),
         configuration={
             "tier": args.tier,
+            "research_config": str(Path(args.config).resolve()),
+            "research_config_sha256": sha256_file(args.config),
+            "task_config": str(Path(args.tasks).resolve()),
+            "task_config_sha256": sha256_file(args.tasks),
             "condition": asdict(condition),
             "steps_per_task": steps,
             "learning_rate": args.learning_rate,
@@ -651,6 +655,9 @@ def main() -> int:
                     + "\n"
                 ).encode(),
             )
+        manifest.configuration["action_normalization"] = {
+            task_id: normalizations[task_id].to_dict() for task_id in task_ids
+        }
         manifest.finished_at = datetime.now(timezone.utc).isoformat()
         write_manifest_atomic(manifest, manifest_path)
         print(json.dumps({"ok": True, "run_id": run_id, "records": len(records)}, indent=2))

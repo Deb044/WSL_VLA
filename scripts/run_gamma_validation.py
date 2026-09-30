@@ -231,6 +231,10 @@ def main() -> int:
         seeds=(args.seed,),
         configuration={
             **candidate_payload,
+            "research_config": str(Path(args.config).resolve()),
+            "research_config_sha256": sha256_file(args.config),
+            "task_config": str(Path(args.tasks).resolve()),
+            "task_config_sha256": sha256_file(args.tasks),
             "max_steps_per_stage": max_steps,
             "learning_rate": args.learning_rate,
             "micro_batch_size": batch_size,
@@ -415,6 +419,9 @@ def main() -> int:
             alignment_checkpoint_sha256=alignment_sha256,
         )
         append_gamma_validation_record(gamma_record, gamma_record_path)
+        manifest.configuration["action_normalization"] = {
+            task_id: normalizations[task_id].to_dict() for task_id in task_ids
+        }
         manifest.finished_at = datetime.now(timezone.utc).isoformat()
         write_manifest_atomic(manifest, manifest_path)
         print(json.dumps({"ok": True, **asdict(gamma_record)}, indent=2, sort_keys=True))

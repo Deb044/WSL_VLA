@@ -174,3 +174,17 @@ success-rate drop uses both Pearson and Spearman coefficients with bootstrap
 
 A failed gate stops later compute. Negative scientific outcomes are retained in
 the records and reported; they are not filtered out of the final analysis.
+
+Gate 3 is executable as:
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+python scripts/run_one_task_learning_gate.py \
+  --suite libero_spatial --task-index 0 --seed 17
+```
+
+It evaluates the frozen base twice and the trained adapter twice with identical
+official LIBERO initialization indices and rollout seeds. It persists all
+episode outcomes and the reloadable trained adapter, and advances only when
+both repetitions are deterministic and the adapted success rate is strictly
+higher than the frozen-base rate.

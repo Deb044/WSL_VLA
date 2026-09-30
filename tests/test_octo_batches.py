@@ -4,6 +4,7 @@ from wsl_vla.research.data import LiberoEpisode
 from wsl_vla.research.octo_batches import (
     ActionNormalization,
     collate_octo_examples,
+    conform_batch_to_octo_example,
     iter_octo_examples,
 )
 
@@ -36,3 +37,27 @@ def test_octo_windows_preserve_episode_boundaries_and_action_masks():
     assert examples[-1]["action_pad_mask"][-1, :, 0].tolist() == [True, False]
     batch = collate_octo_examples(examples[:2])
     assert batch["action"].shape == (2, 2, 2, 1)
+
+
+def test_conform_batch_drops_only_checkpoint_unsupported_observations():
+    batch = {
+        "observation": {
+            "image_primary": np.zeros((2, 1, 4, 4, 3), dtype=np.uint8),
+            "timestep_pad_mask": np.ones((2, 1), dtype=bool),
+            "proprio": np.zeros((2, 1, 8), dtype=np.float32),
+        },
+        "task": {"language_instruction": np.zeros((2, 4), dtype=np.int32)},
+        "action": np.zeros((2, 1, 2, 7), dtype=np.float32),
+        "action_pad_mask": np.ones((2, 1, 2, 7), dtype=bool),
+    }
+    example = {
+        "observation": {
+            "image_primary": np.zeros((1, 1, 4, 4, 3), dtype=np.uint8),
+            "timestep_pad_mask": np.ones((1, 1), dtype=bool),
+        },
+        "task": {"language_instruction": np.zeros((1, 4), dtype=np.int32)},
+        "action": np.zeros((1, 1, 2, 7), dtype=np.float32),
+    }
+    conformed = conform_batch_to_octo_example(batch, example)
+    assert set(conformed["observation"]) == {"image_primary", "timestep_pad_mask"}
+    assert "proprio" not in conformed["observation"]

@@ -155,3 +155,40 @@ def collate_octo_examples(examples: Sequence[Mapping], text_processor=None) -> d
             raise RuntimeError("official Octo is required for language tokenization") from exc
         batch = process_text(batch, text_processor)
     return batch
+
+
+def conform_batch_to_octo_example(batch: Mapping, example_batch: Mapping) -> dict:
+    """Select and shape-check exactly the inputs supported by a checkpoint.
+
+    LIBERO loaders may expose useful extra observations such as proprioception.
+    Official Octo checkpoints differ in which tokenizers they enable, so extras
+    are dropped only after they have been loaded and validated from the dataset.
+    Missing checkpoint-required inputs fail closed.
+    """
+
+    required_top = {"observation", "task", "action", "action_pad_mask"}
+    if required_top - set(batch):
+        raise ValueError(f"batch lacks Octo fields: {sorted(required_top-set(batch))}")
+    if not {"observation", "task", "action"} <= set(example_batch):
+        raise ValueError("official Octo example batch is incomplete")
+
+    result = {}
+    for family in ("observation", "task"):
+        expected = example_batch[family]
+        missing = set(expected) - set(batch[family])
+        if missing:
+            raise ValueError(f"batch lacks checkpoint-required {family} keys: {sorted(missing)}")
+        result[family] = {key: batch[family][key] for key in expected}
+        for key, value in result[family].items():
+            actual_shape = np.asarray(value).shape
+            expected_shape = np.asarray(expected[key]).shape
+            if actual_shape[1:] != expected_shape[1:]:
+                raise ValueError(
+                    f"{family}/{key} shape {actual_shape[1:]} differs from checkpoint {expected_shape[1:]}"
+                )
+    for name in ("action", "action_pad_mask"):
+        value = np.asarray(batch[name])
+        if name == "action" and value.shape[1:] != np.asarray(example_batch["action"]).shape[1:]:
+            raise ValueError("action shape differs from official Octo checkpoint")
+        result[name] = value
+    return result

@@ -88,6 +88,8 @@ def train_shared_lora_stage(
     steps: int,
     learning_rate: float,
     gradient_accumulation_steps: int,
+    checkpoint_steps: Sequence[int] = (),
+    checkpoint_sink: Callable[[int, Any, float], bool] | None = None,
 ) -> LoRAStageResult:
     """Continue one adapter state; optimizer moments reset at task boundaries."""
 
@@ -97,6 +99,13 @@ def train_shared_lora_stage(
         _validate_batches(batches, steps)
     if learning_rate <= 0 or gradient_accumulation_steps <= 0:
         raise ValueError("learning rate and accumulation steps must be positive")
+    requested_checkpoints = tuple(int(value) for value in checkpoint_steps)
+    if requested_checkpoints != tuple(sorted(set(requested_checkpoints))):
+        raise ValueError("checkpoint steps must be unique and increasing")
+    if any(value <= 0 or value > steps for value in requested_checkpoints):
+        raise ValueError("checkpoint steps must lie within the training budget")
+    if requested_checkpoints and checkpoint_sink is None:
+        raise ValueError("checkpoint steps require a checkpoint sink")
     jax, optax = _jax_imports()
     adapter_state = previous_adapter_state
     optimizer = optax.MultiSteps(
@@ -140,6 +149,9 @@ def train_shared_lora_stage(
         micro_steps += 1
         if micro_steps % gradient_accumulation_steps == 0:
             update_steps += 1
+            if update_steps in requested_checkpoints and checkpoint_sink is not None:
+                if checkpoint_sink(update_steps, adapter_state, float(final_loss)):
+                    break
     host_state = jax.device_get(adapter_state)
     return LoRAStageResult(
         adapter_state=adapter_state,

@@ -262,6 +262,14 @@ class OODEvaluationRecord:
     successes: int
     checkpoint_sha256: str
     wall_time_seconds: float
+    initialization_indices: Sequence[int]
+    rollout_seeds: Sequence[int]
+    source_training_suites: Sequence[str]
+    alignment_checkpoint_sha256: str
+    adaptation_loss: float | None = None
+    adapter_bytes: int = 0
+    evidence_bytes: int = 0
+    failure: Mapping[str, Any] | None = None
     schema_version: int = SCHEMA_VERSION
 
     @property
@@ -270,4 +278,16 @@ class OODEvaluationRecord:
             raise ValueError("adaptation steps must be non-negative and rollouts positive")
         if not 0 <= self.successes <= self.rollout_count:
             raise ValueError("successes must lie in [0, rollout_count]")
+        if len(self.initialization_indices) != self.rollout_count:
+            raise ValueError("OOD records require every fixed initialization index")
+        if len(set(self.initialization_indices)) != self.rollout_count:
+            raise ValueError("OOD initialization indices cannot repeat")
+        if len(self.rollout_seeds) != self.rollout_count:
+            raise ValueError("OOD records require every rollout seed")
+        if self.held_out_suite in self.source_training_suites:
+            raise ValueError("held-out suite leaked into OOD reference data")
+        if len(self.checkpoint_sha256) != 64 or len(self.alignment_checkpoint_sha256) != 64:
+            raise ValueError("OOD checkpoint identities must be SHA-256 digests")
+        if min(self.wall_time_seconds, self.adapter_bytes, self.evidence_bytes) < 0:
+            raise ValueError("OOD runtime and memory values cannot be negative")
         return self.successes / self.rollout_count

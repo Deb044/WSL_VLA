@@ -89,6 +89,7 @@ class TaskRolloutSummary:
             successes=self.successes,
             initialization_indices=self.initialization_indices,
             rollout_seeds=tuple(episode.episode_seed for episode in self.episodes),
+            checkpoint_sha256=self.policy_checkpoint_sha256,
         )
 
 
@@ -327,7 +328,9 @@ class OctoLiberoPolicy:
             raise ValueError("LIBERO action statistics must be positive 7-D mean/std arrays")
         params = materialize_policy_params(bundle, adapter_state)
         self.model = bundle.research_model.replace(params=params)
-        self.checkpoint_sha256 = sha256_array_tree(params)
+        # Records and stage sidecars identify the small reloadable adapter, not
+        # a second hash of the repeatedly materialized frozen base parameters.
+        self.checkpoint_sha256 = sha256_array_tree(adapter_state)
         self.unnormalization_statistics = {"mean": mean, "std": std}
         self.argmax = bool(argmax)
         self.temperature = float(temperature)

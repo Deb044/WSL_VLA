@@ -79,6 +79,26 @@ def test_sequential_runner_rejects_rollouts_without_initialization_provenance():
         )
 
 
+def test_sequential_runner_rejects_a_different_rollout_checkpoint():
+    def train(state, task_id, stage):
+        return StageUpdate(state, "a" * 64, {})
+
+    with pytest.raises(ValueError, match="differs from the trained"):
+        run_sequential_protocol(
+            initial_state=None,
+            task_ids=("a",),
+            train_stage=train,
+            rollout=lambda state, task, count, seed: RolloutOutcome(
+                1, (0,), (seed,), "b" * 64
+            ),
+            run_id="test",
+            suite="suite",
+            seed=1,
+            condition="condition",
+            rollout_count=1,
+        )
+
+
 def test_sequential_runner_persists_stages_and_records_incrementally():
     events = []
 

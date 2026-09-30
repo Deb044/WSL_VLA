@@ -30,6 +30,7 @@ class RolloutOutcome:
     successes: int
     initialization_indices: tuple[int, ...]
     rollout_seeds: tuple[int, ...]
+    checkpoint_sha256: str | None = None
 
 
 TrainStage = Callable[[State, str, int], StageUpdate[State]]
@@ -80,6 +81,11 @@ def run_sequential_protocol(
             evaluation_seconds = perf_counter() - evaluation_started
             if not isinstance(outcome, RolloutOutcome):
                 raise TypeError("publication rollouts must return initialization provenance")
+            if (
+                outcome.checkpoint_sha256 is not None
+                and outcome.checkpoint_sha256 != update.checkpoint_sha256
+            ):
+                raise ValueError("rollout policy differs from the trained shared checkpoint")
             record = EvaluationRecord(
                 run_id=run_id,
                 suite=suite,
@@ -156,6 +162,11 @@ def run_independent_oracle_protocol(
             evaluation_seconds = perf_counter() - evaluation_started
             if not isinstance(outcome, RolloutOutcome):
                 raise TypeError("publication rollouts must return initialization provenance")
+            if (
+                outcome.checkpoint_sha256 is not None
+                and outcome.checkpoint_sha256 != selected.checkpoint_sha256
+            ):
+                raise ValueError("oracle rollout policy differs from its stored task checkpoint")
             record = EvaluationRecord(
                 run_id=run_id,
                 suite=suite,

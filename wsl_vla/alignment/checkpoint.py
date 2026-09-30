@@ -204,7 +204,25 @@ def refine_alignment_latents(
 
     # Publication runs fail before optimization if any modality is detached
     # from the real decoded-adapter -> Octo -> diffusion-loss computation.
-    first_batch = next(iter(batches())) if callable(batches) else batches[0]
+    training_batches = batches
+    if callable(batches):
+        first_iterator = iter(batches())
+        try:
+            first_batch = next(first_iterator)
+        except StopIteration as exc:
+            raise ValueError("batch factory produced no refinement batches") from exc
+        first_epoch_pending = True
+
+        def training_batches():
+            nonlocal first_epoch_pending
+            if first_epoch_pending:
+                first_epoch_pending = False
+                yield first_batch
+                yield from first_iterator
+            else:
+                yield from batches()
+    else:
+        first_batch = batches[0]
     assert_task_loss_gradients(
         initial,
         task_loss=lambda values: task_loss(values, first_batch),
@@ -212,7 +230,7 @@ def refine_alignment_latents(
     return refine_latents(
         initial,
         task_loss=task_loss,
-        batches=batches,
+        batches=training_batches,
         gammas=gammas,
         steps=steps,
         learning_rate=learning_rate,

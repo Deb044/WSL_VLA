@@ -48,6 +48,9 @@ def test_ood_and_component_swap_jsonl_round_trip(tmp_path):
         current_checkpoint_sha256="b" * 64,
         swapped_checkpoint_sha256="c" * 64,
         latent_drift={"vision": 1.0, "language": 0.5, "action": 0.2},
+        rollout_seeds=(30, 31),
+        baseline_wall_time_seconds=1.0,
+        swapped_wall_time_seconds=1.0,
     )
     swap_path = tmp_path / "swaps.jsonl"
     append_component_swap_record(swap, swap_path)

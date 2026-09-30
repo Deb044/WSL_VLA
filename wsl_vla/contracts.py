@@ -310,6 +310,9 @@ class ComponentSwapRecord:
     current_checkpoint_sha256: str
     swapped_checkpoint_sha256: str
     latent_drift: Mapping[str, float]
+    rollout_seeds: Sequence[int]
+    baseline_wall_time_seconds: float
+    swapped_wall_time_seconds: float
     schema_version: int = SCHEMA_VERSION
 
     @property
@@ -332,6 +335,12 @@ class ComponentSwapRecord:
             raise ValueError("swapped successes lie outside the rollout count")
         if len(self.initialization_indices) != self.rollout_count:
             raise ValueError("component swaps require fixed initialization identities")
+        if len(set(self.initialization_indices)) != self.rollout_count:
+            raise ValueError("component-swap initialization identities cannot repeat")
+        if len(self.rollout_seeds) != self.rollout_count:
+            raise ValueError("component swaps require every rollout seed")
+        if min(self.baseline_wall_time_seconds, self.swapped_wall_time_seconds) < 0:
+            raise ValueError("component-swap wall times cannot be negative")
         for digest in (
             self.previous_checkpoint_sha256,
             self.current_checkpoint_sha256,

@@ -12,6 +12,38 @@ from ..octo.training import (
 )
 
 
+def effective_updates_from_state(bundle: Any, spec: AdapterSpec, state: Mapping[str, Any]):
+    """Recover the true dense update from low-rank and decoded state leaves."""
+
+    from .packing import effective_update
+    from ..octo.bridge import build_adapter_spec_and_factors
+
+    observed_spec, factors = build_adapter_spec_and_factors(
+        bundle, token_width=spec.token_width, adapter_state=state
+    )
+    if observed_spec != spec:
+        raise ValueError("adapter state layout differs from AdapterSpec")
+    updates = {}
+    decoded_transformer = state.get("decoded_transformer", {})
+    decoded_diffusion = state.get("decoded_diffusion", {})
+    for entry in spec.entries:
+        down, up = factors[entry.parameter_path]
+        value = effective_update(down, up, alpha=spec.alpha, rank=entry.rank)
+        if entry.parameter_path in decoded_diffusion:
+            value = value + decoded_diffusion[entry.parameter_path]
+        elif decoded_transformer:
+            prefix, name = entry.parameter_path.rsplit("/", 1)
+            component, separator, layer = name.removeprefix("adapter_").rpartition("_")
+            if not separator or not layer.isdigit():
+                raise ValueError(f"cannot parse transformer adapter path: {entry.parameter_path}")
+            decoded_key = f"{prefix}/decoded_{component}_{layer}_kernel"
+            if decoded_key not in decoded_transformer:
+                raise ValueError(f"decoded transformer state lacks {decoded_key}")
+            value = value + decoded_transformer[decoded_key]
+        updates[entry.parameter_path] = value
+    return updates
+
+
 def _jax():
     try:
         import jax.numpy as jnp

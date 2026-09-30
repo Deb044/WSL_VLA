@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -90,13 +91,21 @@ def run_consecutive_component_swaps(
     rollout_count: int,
     previous_checkpoint_sha256: str,
     current_checkpoint_sha256: str,
+    record_sink: Callable[[ComponentSwapRecord], None] | None = None,
 ) -> tuple[ComponentSwapRecord, ...]:
     """Swap only the immediately preceding checkpoint on identical rollouts."""
 
     validate_consecutive_stages(previous_stage, current_stage)
+    baseline_started = perf_counter()
     baseline = rollout(current_state, evaluated_task_id, rollout_count, seed)
+    baseline_seconds = perf_counter() - baseline_started
     if not isinstance(baseline, RolloutOutcome):
         raise TypeError("component-swap rollouts require initialization provenance")
+    if (
+        baseline.checkpoint_sha256 is not None
+        and baseline.checkpoint_sha256 != current_checkpoint_sha256
+    ):
+        raise ValueError("component-swap baseline is not the current checkpoint")
     drift = component_drift(previous_updates, current_updates, spec)
     records = []
     for swap_name, components in SWAP_CONDITIONS.items():
@@ -109,11 +118,20 @@ def run_consecutive_component_swaps(
             current_stage=current_stage,
         )
         swapped_state, swapped_sha256 = materialize_swapped_state(swapped_updates)
+        swapped_started = perf_counter()
         outcome = rollout(swapped_state, evaluated_task_id, rollout_count, seed)
+        swapped_seconds = perf_counter() - swapped_started
         if not isinstance(outcome, RolloutOutcome):
             raise TypeError("component-swap rollouts require initialization provenance")
         if outcome.initialization_indices != baseline.initialization_indices:
             raise ValueError("component swaps must use baseline initialization identities")
+        if outcome.rollout_seeds != baseline.rollout_seeds:
+            raise ValueError("component swaps must use identical rollout seeds")
+        if (
+            outcome.checkpoint_sha256 is not None
+            and outcome.checkpoint_sha256 != swapped_sha256
+        ):
+            raise ValueError("component-swap rollout differs from the materialized checkpoint")
         record = ComponentSwapRecord(
             run_id=run_id,
             suite=suite,
@@ -130,7 +148,12 @@ def run_consecutive_component_swaps(
             current_checkpoint_sha256=current_checkpoint_sha256,
             swapped_checkpoint_sha256=swapped_sha256,
             latent_drift=drift,
+            rollout_seeds=outcome.rollout_seeds,
+            baseline_wall_time_seconds=baseline_seconds,
+            swapped_wall_time_seconds=swapped_seconds,
         )
         _ = record.success_rate_drop
         records.append(record)
+        if record_sink is not None:
+            record_sink(record)
     return tuple(records)

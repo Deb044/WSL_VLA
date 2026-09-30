@@ -24,6 +24,9 @@ def main() -> int:
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--alpha", type=float, default=16.0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--output", default="research_results/preflight/octo_equivalence.json"
+    )
     args = parser.parse_args()
 
     bundle = load_research_octo(
@@ -36,20 +39,19 @@ def main() -> int:
     paths = adapter_parameter_paths(bundle.research_model.params)
     if not paths:
         raise RuntimeError("patched Octo contains no modality adapter parameters")
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "octo_git_revision": OCTO_GIT_REVISION,
-                "base_sha256": bundle.base_sha256,
-                "base_revision": bundle.base_revision,
-                "adapter_parameter_count": len(paths),
-                "diffusion_kernel_count": len(bundle.diffusion_kernel_paths),
-                "adapter_paths": ["/".join(path) for path in paths],
-            },
-            indent=2,
-        )
-    )
+    report = {
+        "ok": True,
+        "octo_git_revision": OCTO_GIT_REVISION,
+        "base_sha256": bundle.base_sha256,
+        "base_revision": bundle.base_revision,
+        "adapter_parameter_count": len(paths),
+        "diffusion_kernel_count": len(bundle.diffusion_kernel_paths),
+        "adapter_paths": ["/".join(path) for path in paths],
+    }
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
     return 0
 
 

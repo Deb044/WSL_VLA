@@ -5,11 +5,29 @@ import pytest
 from wsl_vla.experiments.gamma_selection import (
     GammaValidationRecord,
     select_gamma_configuration,
+    validate_gamma_candidate_config,
 )
 
 
 SOURCES = ("libero_spatial", "libero_object", "libero_goal")
 SEEDS = (17, 42, 73)
+
+
+def test_gamma_candidate_search_space_is_explicit_and_direction_safe():
+    payload = {
+        "schema_version": 1,
+        "early_stopping_patience": [10, 20],
+        "proposed": [
+            {"name": "asymmetric", "vision": 1.0, "language": 2.0, "action": 0.1}
+        ],
+        "uniform": [
+            {"name": "uniform", "vision": 0.5, "language": 0.5, "action": 0.5}
+        ],
+    }
+    validate_gamma_candidate_config(payload)
+    payload["proposed"][0]["action"] = 3.0
+    with pytest.raises(ValueError, match="preserve the hypothesis"):
+        validate_gamma_candidate_config(payload)
 
 
 def records_for(family, gammas, patience, score):

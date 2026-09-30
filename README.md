@@ -71,8 +71,9 @@ task order before training begins.
 - Standard research outputs live under ignored `research_results/` and contain
   manifests, checkpoints, JSONL rollout records, and generated tables/figures.
 
-See `docs/RESEARCH_PIPELINE.md` for the data contracts, commands, experiment
-gates, and interpretation rules.
+Start with `docs/METHODOLOGY1_RUNBOOK.md` for the exact execution order. See
+`docs/IMPLEMENTATION_STATUS.md` for implemented versus not-yet-executed work,
+and `docs/RESEARCH_PIPELINE.md` for detailed data contracts.
 
 ## Implemented research utilities
 
@@ -101,11 +102,11 @@ with:
 python scripts/extract_research_evidence.py \
   --data-file data/libero/libero_spatial/task_0.hdf5 \
   --suite libero_spatial --task-index 0 \
-  --output research_results/evidence/libero_spatial_0.npz
+  --output research_results/evidence/libero_spatial/libero_spatial_0.npz
 
 python scripts/train_research_zoo.py \
   --suite libero_spatial --task-index 0 --seed 17 \
-  --evidence research_results/evidence/libero_spatial_0.npz
+  --evidence research_results/evidence/libero_spatial/libero_spatial_0.npz
 ```
 
 The evidence command uses only locked training episodes and records action
@@ -142,3 +143,6 @@ python scripts/report_research_metrics.py research_results/records/run.jsonl \
 Offline action MSE is diagnostic only. Publication claims require rollout-based
 success matrices, three seeds, confidence intervals, complete provenance, and
 the locked ablation set.
+
+Use `scripts/report_publication_study.py` for the final report; it requires all
+four suites, three seeds, eight conditions, and every lower-triangular cell.

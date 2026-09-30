@@ -84,6 +84,40 @@ class GammaValidationRecord:
         return float(self.average_success_rate - self.negative_backward_transfer)
 
 
+def validate_gamma_candidate_config(payload: Mapping) -> None:
+    """Validate the predeclared finite search space before launching jobs."""
+
+    if payload.get("schema_version") != 1:
+        raise ValueError("unsupported gamma-candidate schema")
+    patience = tuple(int(value) for value in payload.get("early_stopping_patience", ()))
+    if not patience or patience != tuple(sorted(set(patience))) or min(patience) <= 0:
+        raise ValueError("patience candidates must be unique, increasing, and positive")
+    names = set()
+    for family in ("proposed", "uniform"):
+        candidates = payload.get(family)
+        if not isinstance(candidates, list) or not candidates:
+            raise ValueError(f"gamma search requires non-empty {family} candidates")
+        tuples = set()
+        for candidate in candidates:
+            if set(candidate) != {"name", *MODALITIES}:
+                raise ValueError(f"{family} gamma candidate fields are invalid")
+            name = str(candidate["name"])
+            if not name or name in names:
+                raise ValueError("gamma candidate names must be non-empty and globally unique")
+            names.add(name)
+            values = tuple(float(candidate[key]) for key in MODALITIES)
+            if min(values) < 0 or values in tuples:
+                raise ValueError(f"{family} gamma candidates must be unique and non-negative")
+            tuples.add(values)
+            if family == "uniform" and len(set(values)) != 1:
+                raise ValueError("uniform gamma candidates must use one shared value")
+            if family == "proposed" and not (
+                float(candidate["vision"]) > float(candidate["action"])
+                and float(candidate["language"]) > float(candidate["action"])
+            ):
+                raise ValueError("proposed gamma candidates must preserve the hypothesis")
+
+
 def append_gamma_validation_record(
     record: GammaValidationRecord, path: str | Path
 ) -> None:

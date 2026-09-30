@@ -1,0 +1,41 @@
+schema_version: 1
+
+# All choices are frozen before any held-out suite is evaluated. Each candidate
+# is run on task indices 8 and 9 of all three source suites and all three seeds.
+early_stopping_patience: [10, 20, 40]
+
+proposed:
+  - name: balanced_low
+    vision: 0.5
+    language: 0.5
+    action: 0.05
+  - name: balanced_medium
+    vision: 1.0
+    language: 1.0
+    action: 0.1
+  - name: balanced_high
+    vision: 2.0
+    language: 2.0
+    action: 0.2
+  - name: vision_dominant
+    vision: 2.0
+    language: 1.0
+    action: 0.1
+  - name: language_dominant
+    vision: 1.0
+    language: 2.0
+    action: 0.1
+
+uniform:
+  - name: uniform_low
+    vision: 0.1
+    language: 0.1
+    action: 0.1
+  - name: uniform_medium
+    vision: 0.5
+    language: 0.5
+    action: 0.5
+  - name: uniform_high
+    vision: 1.0
+    language: 1.0
+    action: 1.0

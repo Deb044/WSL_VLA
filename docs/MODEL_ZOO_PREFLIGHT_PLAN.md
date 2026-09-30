@@ -1,3 +1,9 @@
+# Historical Model-Zoo Draft (Do Not Execute)
+
+This document predates the official Octo-Small/JAX path and contains mock and
+synthetic procedures that are not publication-eligible. Use
+`docs/METHODOLOGY1_RUNBOOK.md` and `scripts/research_preflight.py` instead.
+
 # Zero-Fail Pre-Flight Protocol: Preparing the VLA Model Zoo Pipeline
 
 **Project**: Weight Space Alignment for Continual Learning in Robotics  

@@ -31,7 +31,7 @@ transformer block:
 - action readout tokens receive the action update.
 
 The action component also includes external low-rank updates for every Dense
-kernel under the official diffusion action head. `flax_adapters.py` discovers
+kernel under the official diffusion action head. `wsl_vla/adapters/flax.py` discovers
 those paths from the loaded parameter tree and applies `down @ up` functionally,
 so gradients flow from diffusion loss to both the decoded head adapters and the
 action latent. Its up factors are zero-initialized for exact base equivalence.
@@ -41,7 +41,7 @@ unmodified and patched models, merges official weights by path and shape, and
 requires their transformer and deterministic diffusion-head output trees to
 match within absolute tolerance `1e-6` before any experiment can proceed.
 
-`octo_training.py` exposes the official diffusion loss as a function of adapter
+`wsl_vla/octo/training.py` exposes the official diffusion loss as a function of adapter
 state only. Frozen parameters are closed over rather than merely assigned a
 zero learning rate, preventing accidental base-model updates.
 
@@ -51,7 +51,7 @@ row-wise into fixed-width windows. Every token carries component, layer,
 parameter-entry, and row metadata. Padding is masked in reconstruction and
 alignment losses.
 
-For generated adapters, `latent_adapter.py` reverses those windows in JAX and
+For generated adapters, `wsl_vla/adapters/latent.py` reverses those windows in JAX and
 applies the decoded effective updates through separate zero-initialized dense
 injection paths. These paths are frozen during low-rank zoo training and avoid
 an unstable SVD or an arbitrary factor basis. Consequently the official
@@ -121,7 +121,7 @@ The best validation checkpoint is used to fit one linear ridge mapper per
 modality. Ridge strength is chosen only on validation tasks. Empirical token
 centres and radii are estimated from training latents and saved beside the
 mapper. The unseen suite is never accepted into these archives.
-The checkpoint includes `token_layout.npz`; `alignment_checkpoint.py` reloads
+The checkpoint includes `token_layout.npz`; `wsl_vla/alignment/checkpoint.py` reloads
 the complete system, maps evidence, projects each modality to its empirical
 per-token shell, decodes the combined sequence, and refines it through official
 Octo diffusion loss.

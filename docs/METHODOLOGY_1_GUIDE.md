@@ -1,3 +1,9 @@
+# Historical Methodology 1 Draft (Do Not Execute)
+
+This file describes the superseded PyTorch surrogate and contains stale tensor
+shapes and commands. Use `docs/METHODOLOGY1_RUNBOOK.md` for the official
+Octo-Small/JAX workflow and `docs/IMPLEMENTATION_STATUS.md` for current status.
+
 # Methodology 1: Weight Space Alignment & Continual Adaptation
 
 This document details the mathematical formulation, implementation, and evaluation workflow for **Methodology 1** of the research proposal: *Weight Space Alignment for Continual Learning in Robotics*.

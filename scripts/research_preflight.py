@@ -32,6 +32,7 @@ from wsl_vla.experiments.provenance import (
     capture_hardware,
     sha256_file,
 )
+from wsl_vla.experiments.gamma_selection import validate_gamma_candidate_config
 from wsl_vla.octo.bridge import OCTO_GIT_REVISION
 
 
@@ -45,6 +46,9 @@ def main() -> int:
     parser.add_argument("--tasks", default="configs/reference_tasks.yaml")
     parser.add_argument("--data-root", default=None)
     parser.add_argument("--base-checkpoint", default=None)
+    parser.add_argument(
+        "--gamma-candidates", default="configs/research/gamma_candidates.yaml"
+    )
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--output-dir", default="research_results/preflight")
     parser.add_argument(
@@ -58,6 +62,8 @@ def main() -> int:
     tasks = load_yaml(args.tasks)
     validate_research_config(config)
     validate_reference_tasks(tasks)
+    gamma_candidates = load_yaml(args.gamma_candidates)
+    validate_gamma_candidate_config(gamma_candidates)
     population = expand_population_runs(tasks, config)
     folds = publication_folds()
 
@@ -139,9 +145,21 @@ def main() -> int:
         "folds": [fold.__dict__ for fold in folds],
         "indexed_data": indexed_files,
         "base_checkpoint": base_checkpoint,
+        "gamma_candidates": {
+            "path": str(Path(args.gamma_candidates).resolve()),
+            "sha256": sha256_file(args.gamma_candidates),
+            "proposed_count": len(gamma_candidates["proposed"]),
+            "uniform_count": len(gamma_candidates["uniform"]),
+            "patience_count": len(gamma_candidates["early_stopping_patience"]),
+        },
         "environment": capture_environment(RESEARCH_DISTRIBUTIONS),
         "hardware": capture_hardware(),
     }
+    report_path = Path(args.output_dir) / "preflight.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(json.dumps(report, indent=2, sort_keys=True))
     if args.host_inspection_only:
         return 0

@@ -10,6 +10,7 @@ official WSL/CUDA experiment has already been executed.
 | Modality adapters and diffusion-head updates | Implemented | `wsl_vla/adapters/flax.py`, `wsl_vla/octo/bridge.py` |
 | Basis-invariant effective-update packing | Implemented | `wsl_vla/adapters/packing.py` |
 | 40×3×3 model zoo contracts | Implemented | `scripts/train_research_zoo.py`, `scripts/build_alignment_archive.py` |
+| Research-zoo integrity and completeness gate | Implemented | `scripts/verify_research_zoo.py` |
 | Visual/language/action evidence | Implemented | `scripts/extract_research_evidence.py`, `wsl_vla/alignment/octo_evidence.py` |
 | Joint alignment and reconstruction control | Implemented | `scripts/train_research_alignment.py` |
 | Linear mapper and empirical token shells | Implemented | `wsl_vla/alignment/mapping.py`, `wsl_vla/alignment/checkpoint.py` |

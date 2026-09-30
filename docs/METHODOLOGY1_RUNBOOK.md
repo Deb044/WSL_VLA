@@ -68,8 +68,13 @@ The 120 independent jobs save three late checkpoints each:
 
 ```bash
 test "$(find "$M1_ROOT/population" -name adapter.npz | wc -l)" -eq 360
-python scripts/verify_zoo.py "$M1_ROOT/population"
+python scripts/verify_research_zoo.py "$M1_ROOT/population" \
+  --output "$M1_ROOT/population/verification.json"
 ```
+
+`verify_zoo.py` is intentionally excluded here: it only validates the legacy
+PyTorch smoke fixture. The research verifier checks all 360 identities, file
+hashes, evidence metadata, frozen-base identity, split labels, and adapter spec.
 
 ## 4. Four leave-one-suite-out folds
 

@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -85,6 +86,23 @@ def capture_environment(packages: Iterable[str]) -> dict[str, str]:
         except importlib.metadata.PackageNotFoundError:
             result[package] = "not-installed"
     return result
+
+
+def capture_environment_lock() -> dict[str, Any]:
+    """Capture every installed distribution without leaking index credentials."""
+    distributions: dict[str, str] = {}
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata.get("Name")
+        if name:
+            distributions[str(name).lower()] = distribution.version
+    return {
+        "schema_version": 1,
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "python_executable": sys.executable,
+        "platform": platform.platform(),
+        "distributions": dict(sorted(distributions.items())),
+    }
 
 
 def installed_vcs_commit(distribution_name: str) -> str:

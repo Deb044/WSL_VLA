@@ -54,10 +54,10 @@ pytest -m "not integration"
 The preflight fails when real data, pinned dependencies, task counts, episode
 structure, CUDA safeguards, or checkpoint provenance are missing. Use
 `--host-inspection-only` only to inspect an incompatible development host.
-After the Octo equivalence gate, create each run's manifest with
-`scripts/write_run_manifest.py`; it hashes all ten suite datasets and records
-the code revision, dirty state, hardware, environment, base hash, seeds, and
-task order before training begins.
+It also saves a complete installed-package lock and hashes the configuration,
+task order, gamma search space, requirements, and datasets. Every official
+runner creates its own manifest before training and records the code revision,
+dirty state, hardware, environment, base hash, seeds, and task order.
 
 ## Publication protocol
 

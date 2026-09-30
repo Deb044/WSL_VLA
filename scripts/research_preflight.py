@@ -29,6 +29,7 @@ from wsl_vla.experiments.protocol import (
 from wsl_vla.experiments.provenance import (
     assert_installed_vcs_revision,
     capture_environment,
+    capture_environment_lock,
     capture_hardware,
     sha256_file,
 )
@@ -135,6 +136,13 @@ def main() -> int:
         smoke_test=args.smoke_test,
         output_directory=args.output_dir,
     )
+    output_directory = Path(args.output_dir)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    environment_lock_path = output_directory / "environment_lock.json"
+    environment_lock_path.write_text(
+        json.dumps(capture_environment_lock(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     report = {
         "ok": not problems,
         "problems": problems,
@@ -152,11 +160,19 @@ def main() -> int:
             "uniform_count": len(gamma_candidates["uniform"]),
             "patience_count": len(gamma_candidates["early_stopping_patience"]),
         },
+        "inputs": {
+            "config_sha256": sha256_file(args.config),
+            "tasks_sha256": sha256_file(args.tasks),
+            "requirements_research_sha256": sha256_file("requirements-research.txt"),
+        },
+        "environment_lock": {
+            "path": str(environment_lock_path.resolve()),
+            "sha256": sha256_file(environment_lock_path),
+        },
         "environment": capture_environment(RESEARCH_DISTRIBUTIONS),
         "hardware": capture_hardware(),
     }
-    report_path = Path(args.output_dir) / "preflight.json"
-    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path = output_directory / "preflight.json"
     report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

@@ -38,7 +38,7 @@ def build_methodology1_job_plan(
         "preflight",
         "gates",
         [python, "scripts/research_preflight.py", "--output-dir", root / "preflight"],
-        outputs=[root / "preflight/preflight.json"],
+        outputs=[root / "preflight/preflight.json", root / "preflight/environment_lock.json"],
         gpu=False,
     )
     add(

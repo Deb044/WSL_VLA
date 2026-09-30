@@ -55,6 +55,9 @@ python scripts/run_official_continual.py \
 Stop on any non-zero exit. The one-task gate requires deterministic repeated
 rollouts and strict improvement over the frozen base. The two-task gate writes
 the three observed lower-triangle cells; the future-task cell remains null.
+Preflight also writes `environment_lock.json`, hashes the research requirements,
+configuration, task order, gamma space, and every indexed dataset, and records
+the pinned Octo/LIBERO revisions. Keep this lock with all transferred results.
 
 ## 3. Evidence and model zoo
 

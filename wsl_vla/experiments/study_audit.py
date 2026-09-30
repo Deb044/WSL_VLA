@@ -71,6 +71,12 @@ def audit_methodology1_study(root: str | Path) -> dict[str, Any]:
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 problems.append(str(exc))
         add(name, problems, path=str(path))
+    environment_lock = root / "preflight/environment_lock.json"
+    add(
+        "environment_lock",
+        [] if environment_lock.is_file() else [f"missing {environment_lock}"],
+        path=str(environment_lock),
+    )
 
     one_task = tuple((root / "gates/one_task").rglob("one_task_gate.json"))
     add(

@@ -6,6 +6,7 @@ official WSL/CUDA experiment has already been executed.
 | Plan area | Status | Primary implementation |
 |---|---|---|
 | Pinned Octo-Small and LIBERO provenance | Implemented | `wsl_vla/octo/bridge.py`, `scripts/research_preflight.py` |
+| Full installed-environment lock and input hashes | Implemented | `scripts/research_preflight.py` |
 | Real episode-level dataset splits | Implemented | `wsl_vla/data/libero.py`, `wsl_vla/data/splits.py` |
 | Modality adapters and diffusion-head updates | Implemented | `wsl_vla/adapters/flax.py`, `wsl_vla/octo/bridge.py` |
 | Basis-invariant effective-update packing | Implemented | `wsl_vla/adapters/packing.py` |

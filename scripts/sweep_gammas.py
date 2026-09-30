@@ -2,7 +2,7 @@
 """
 scripts/sweep_gammas.py
 
-Empirical Hyperparameter Sweep for Differential Regularization Gammas:
+Legacy proxy smoke sweep for differential-regularization plumbing:
     (gamma_vis, gamma_lang, gamma_act)
 
 Explores the stability-plasticity trade-off in the component-factorized weight space:
@@ -33,6 +33,7 @@ from models import (
     DifferentialRegularizer,
 )
 from data.dataset import LiberoTaskDataset
+from wsl_vla.smoke_guard import require_explicit_smoke_test
 
 
 def evaluate_configuration(
@@ -85,7 +86,7 @@ def evaluate_configuration(
         curr_task_name = task_names.get(curr_task_id, curr_task_id)
 
         # Retrieve initial latent from Model Zoo checkpoint via autoencoder
-        ckpt_path = f"checkpoints/model_zoo/task_{curr_task_id}.pt"
+        ckpt_path = f"smoke_results/model_zoo/task_{curr_task_id}.pt"
         if os.path.exists(ckpt_path):
             ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
             with torch.no_grad():
@@ -193,7 +194,7 @@ def main():
     parser.add_argument(
         "--aligned_ae",
         type=str,
-        default="checkpoints/weight_alignment/aligned_weight_autoencoder.pt",
+        default="smoke_results/weight_alignment/aligned_weight_autoencoder.pt",
         help="Aligned autoencoder checkpoint",
     )
     parser.add_argument(
@@ -222,7 +223,9 @@ def main():
         choices=["focused_grid", "full_grid", "sensitivity_act", "sensitivity_vis"],
         help="Preset search space",
     )
+    parser.add_argument("--smoke-test", action="store_true", help="Acknowledge this is the legacy PyTorch proxy")
     args = parser.parse_args()
+    require_explicit_smoke_test(args.smoke_test)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("=" * 80)

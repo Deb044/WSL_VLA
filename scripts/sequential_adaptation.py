@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+"""Legacy PyTorch proxy sequential smoke fixture; not a research experiment.
 scripts/sequential_adaptation.py
 
 Implements Section 1.3 of Methodology:
@@ -36,6 +36,7 @@ from models import (
     DifferentialRegularizer,
 )
 from data.dataset import LiberoTaskDataset
+from wsl_vla.smoke_guard import require_explicit_smoke_test
 
 
 def run_sequential_adaptation(
@@ -252,13 +253,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sequential Adaptation Continual Learning")
     parser.add_argument("--vla_config", type=str, default="configs/vla_config.yaml")
     parser.add_argument("--tasks_config", type=str, default="configs/tasks_config.yaml")
-    parser.add_argument("--aligned_ae", type=str, default="./checkpoints/weight_alignment/aligned_weight_autoencoder.pt")
+    parser.add_argument("--aligned_ae", type=str, default="./smoke_results/weight_alignment/aligned_weight_autoencoder.pt")
     parser.add_argument("--schedule", type=str, default="fixed", choices=["fixed", "drift_informed", "adaptive"])
     parser.add_argument("--gamma_vis", type=float, default=1.0)
     parser.add_argument("--gamma_lang", type=float, default=1.0)
     parser.add_argument("--gamma_act", type=float, default=0.2)
     parser.add_argument("--refine_steps", type=int, default=50)
+    parser.add_argument("--smoke-test", action="store_true", help="Acknowledge this is the legacy PyTorch proxy")
     args = parser.parse_args()
+    require_explicit_smoke_test(args.smoke_test)
 
     with open(args.vla_config, "r") as f:
         vla_cfg = yaml.safe_load(f)

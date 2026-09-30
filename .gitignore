@@ -53,6 +53,7 @@ venv.bak/
 wandb/
 logs/
 research_results/
+smoke_results/
 *.log
 training_*.log
 

@@ -2,7 +2,7 @@
 """
 scripts/evaluate_vla.py
 
-Comprehensive evaluation script for trained VLA models and task-specific LoRA adapters.
+Legacy PyTorch proxy evaluation fixture. Metrics are diagnostic smoke outputs only.
 Evaluates trajectory tracking accuracy against real LIBERO teleoperated demonstrations.
 
 Metrics Computed:
@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from models import build_vla_model
 from data.dataset import LiberoTaskDataset
+from wsl_vla.smoke_guard import require_explicit_smoke_test
 
 
 def evaluate_task(
@@ -133,12 +134,14 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate Trained VLA Model Zoo")
     parser.add_argument("--vla_config", type=str, default="configs/vla_config.yaml")
     parser.add_argument("--tasks_config", type=str, default="configs/tasks_config.yaml")
-    parser.add_argument("--checkpoints_dir", type=str, default="./checkpoints/model_zoo")
+    parser.add_argument("--checkpoints_dir", type=str, default="./smoke_results/model_zoo")
     parser.add_argument("--data_dir", type=str, default="./data/libero")
     parser.add_argument("--task_id", type=str, default=None, help="Evaluate specific task ID or all available")
     parser.add_argument("--suite", type=str, default=None, help="Evaluate only tasks from a specific suite")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of tasks to evaluate")
+    parser.add_argument("--smoke-test", action="store_true", help="Acknowledge this is the legacy PyTorch proxy")
     args = parser.parse_args()
+    require_explicit_smoke_test(args.smoke_test)
 
     with open(args.vla_config, "r") as f:
         vla_cfg = yaml.safe_load(f)

@@ -2,14 +2,14 @@
 """
 scripts/orchestrate_zoo.py
 
-Automated suite-by-suite orchestrator for the 40-Task Model Zoo.
+Legacy PyTorch proxy smoke-test orchestrator. Not valid for research results.
 Designed to operate strictly within tight storage limits (e.g. 14 GB).
 Supports HF_TOKEN via environment variable, CLI argument, or .env file to bypass rate limits.
 
 Workflow for each suite in ['libero_spatial', 'libero_object', 'libero_goal', 'libero_10']:
   1. Download the suite's demonstration HDF5 files (~3.5 to 5 GB).
-  2. Train the 10 tasks with Octo-Small factorized LoRA on the RTX 4050 GPU.
-  3. Atomically serialize task checkpoints to ./checkpoints/model_zoo/task_*.pt.
+  2. Train the 10 tasks with the proxy model and factorized LoRA.
+  3. Serialize smoke checkpoints to ./smoke_results/model_zoo/task_*.pt.
   4. Clean up the raw HDF5 files for that suite to reclaim disk space.
   5. Repeat for the next suite.
   6. Final integrity verification confirming 40 valid checkpoints.
@@ -23,6 +23,8 @@ from typing import Optional
 
 # Ensure repo root is on Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from wsl_vla.smoke_guard import require_explicit_smoke_test, write_smoke_marker
 
 
 SUITES = ["libero_spatial", "libero_object", "libero_goal", "libero_10"]
@@ -65,7 +67,9 @@ def orchestrate_zoo(
     keep_datasets: bool = False,
     start_suite: str = None,
     hf_token: Optional[str] = None,
+    smoke_test: bool = False,
 ):
+    require_explicit_smoke_test(smoke_test, output_directories=("smoke_results/model_zoo",))
     token = get_hf_token(hf_token)
     run_env = os.environ.copy()
     if token:
@@ -75,14 +79,15 @@ def orchestrate_zoo(
 
     print("======================================================================")
     print(" Starting 40-Task Model Zoo Suite-by-Suite Construction Pipeline")
-    print(f" Target Model: Octo-Small (27M) with Factorized LoRA [8, 3, 16, 384]")
+    print(" Target Model: LEGACY PYTORCH PROXY (NOT OFFICIAL OCTO; SMOKE TEST ONLY)")
     print(f" Steps per task: {steps_per_task}")
     print(f" Storage Strategy: Clean raw HDF5 after each suite to conserve disk")
     print("======================================================================")
 
     data_dir = "./data/libero"
     os.makedirs(data_dir, exist_ok=True)
-    os.makedirs("./checkpoints/model_zoo", exist_ok=True)
+    os.makedirs("./smoke_results/model_zoo", exist_ok=True)
+    write_smoke_marker("./smoke_results/model_zoo", command="scripts/orchestrate_zoo.py")
 
     suite_list = list(SUITES)
     if start_suite and start_suite in suite_list:
@@ -115,6 +120,7 @@ def orchestrate_zoo(
             "scripts/train_zoo.py",
             "--suite", suite,
             "--max_steps", str(steps_per_task),
+            "--smoke-test",
         ]
         if not run_command(train_cmd, f"Training 10 tasks for {suite}", env=run_env):
             print(f"[ERROR] Training failed on suite {suite}. Halting.")
@@ -136,8 +142,9 @@ def orchestrate_zoo(
     verify_cmd = [
         python_bin,
         "scripts/verify_zoo.py",
-        "--dir", "./checkpoints/model_zoo",
+        "--dir", "./smoke_results/model_zoo",
         "--expected", "40",
+        "--smoke-test",
     ]
     run_command(verify_cmd, "Final Population Verification", env=run_env)
 
@@ -148,6 +155,7 @@ if __name__ == "__main__":
     parser.add_argument("--keep_data", action="store_true", help="Keep raw HDF5 datasets after training")
     parser.add_argument("--start_from", type=str, default=None, help="Resume from a specific suite")
     parser.add_argument("--token", type=str, default=None, help="Hugging Face API token (or set HF_TOKEN env var)")
+    parser.add_argument("--smoke-test", action="store_true", help="Acknowledge this is the legacy PyTorch proxy")
     args = parser.parse_args()
 
     orchestrate_zoo(
@@ -156,4 +164,5 @@ if __name__ == "__main__":
         keep_datasets=args.keep_data,
         start_suite=args.start_from,
         hf_token=args.token,
+        smoke_test=args.smoke_test,
     )

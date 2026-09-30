@@ -33,6 +33,8 @@ training:
   seed: 42
 
 paths:
-  checkpoints_dir: "./checkpoints/model_zoo"
+  # Legacy PyTorch proxy artifacts only. Official experiments write exclusively
+  # below research_results/ through the JAX/Flax research commands.
+  checkpoints_dir: "./smoke_results/model_zoo"
   data_dir: "./data/libero"
-  logs_dir: "./logs"
+  logs_dir: "./smoke_results/logs"

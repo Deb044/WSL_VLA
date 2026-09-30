@@ -11,6 +11,11 @@ import sys
 import argparse
 import torch
 
+# Add repository root before importing the smoke guard.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from wsl_vla.smoke_guard import require_explicit_smoke_test
+
 def verify_zoo(checkpoint_dir: str, expected_tasks: int = 40):
     print("======================================================================")
     print(f" Verifying Model Zoo Checkpoints in: {checkpoint_dir}")
@@ -69,8 +74,10 @@ def verify_zoo(checkpoint_dir: str, expected_tasks: int = 40):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dir", type=str, default="./checkpoints/model_zoo")
+    parser.add_argument("--dir", type=str, default="./smoke_results/model_zoo")
     parser.add_argument("--expected", type=int, default=40)
+    parser.add_argument("--smoke-test", action="store_true", help="Acknowledge this verifies proxy smoke artifacts only")
     args = parser.parse_args()
+    require_explicit_smoke_test(args.smoke_test)
 
     verify_zoo(checkpoint_dir=args.dir, expected_tasks=args.expected)

@@ -2,12 +2,12 @@
 """
 scripts/train_alignment.py
 
-Implements Weight-Space Alignment Training (Methodology Sections 1.1 and 1.2).
+Legacy PyTorch alignment smoke fixture; not a Methodology 1 research command.
 Loads the Model Zoo population checkpoints:
     Delta W in R^[N_tasks, L, 3, r, H]
 and multi-modal evidence tuples:
     M = {e_vis, e_lang, e_act}
-and trains the shared FactorizedWeightAutoencoder (g_phi, h_psi) and ModalityContrastiveAligner.
+and exercises the proxy autoencoder and contrastive-aligner plumbing.
 
 Objective:
     L_total = L_recon + lambda_vis L_align^(vis) + lambda_lang L_align^(lang) + lambda_act L_align^(act) + lambda_aux L_aux
@@ -24,6 +24,7 @@ from torch.utils.data import Dataset, DataLoader
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from models import FactorizedWeightAutoencoder, ModalityContrastiveAligner
+from wsl_vla.smoke_guard import require_explicit_smoke_test, write_smoke_marker
 
 
 class ModelZooPopulationDataset(Dataset):
@@ -69,8 +70,8 @@ def collate_zoo_batch(batch):
 
 
 def train_alignment(
-    checkpoint_dir: str = "./checkpoints/model_zoo",
-    output_dir: str = "./checkpoints/weight_alignment",
+    checkpoint_dir: str = "./smoke_results/model_zoo",
+    output_dir: str = "./smoke_results/weight_alignment",
     num_epochs: int = 150,
     lr: float = 5e-4,
     d_latent: int = 128,
@@ -194,11 +195,14 @@ def train_alignment(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints/model_zoo")
-    parser.add_argument("--output_dir", type=str, default="./checkpoints/weight_alignment")
+    parser.add_argument("--checkpoint_dir", type=str, default="./smoke_results/model_zoo")
+    parser.add_argument("--output_dir", type=str, default="./smoke_results/weight_alignment")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--smoke-test", action="store_true", help="Acknowledge this is the legacy PyTorch proxy")
     args = parser.parse_args()
+    require_explicit_smoke_test(args.smoke_test, output_directories=(args.output_dir,))
+    write_smoke_marker(args.output_dir, command="scripts/train_alignment.py")
 
     train_alignment(
         checkpoint_dir=args.checkpoint_dir,

@@ -2,9 +2,12 @@
 
 ## 1. Evidence boundary
 
-Only code under `wsl_vla/research` and scripts whose names contain `research` or
-`official_octo` belong to the publication path. The legacy PyTorch model is a
-custom analogue, not Octo-Small, and may be used only for CPU smoke tests.
+Only code under `wsl_vla/research` and the explicit JAX entry points documented
+below belong to the publication path. In particular,
+`scripts/run_research_benchmark.py` is a deprecated legacy fixture despite its
+historical filename. Every legacy PyTorch command now requires `--smoke-test`,
+writes under `smoke_results/`, and marks artifacts as publication-ineligible.
+The legacy model is a custom analogue, not Octo-Small.
 
 The official path does not silently generate samples, download an unpinned base,
 reuse a task-specific latent during shared-policy evaluation, or report an

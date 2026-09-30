@@ -2,8 +2,10 @@
 """
 scripts/run_research_benchmark.py
 
-Comprehensive Research-Level Evaluation Suite for Weight-Space Continual Learning.
-Implements the full benchmarking protocol across the complete 40-task LIBERO benchmark:
+DEPRECATED legacy PyTorch proxy smoke benchmark. This does not implement the
+official Octo/LIBERO research protocol and must never be cited as a result.
+
+It exercises older plumbing across the configured tasks:
   1. Sequential Adaptation Stream across all 40 LIBERO tasks (spatial, object, goal, libero_10).
   2. Latent Drift as a Forgetting Proxy (Section 2.1 & 2.2 Component-Swap Protocol):
      - Euclidean distance ||Z_m^(t) - Z_m^(0)||_2 per modality.
@@ -37,6 +39,7 @@ from models import (
     DifferentialRegularizer,
 )
 from data.dataset import LiberoTaskDataset
+from wsl_vla.smoke_guard import require_explicit_smoke_test
 
 
 def pearson_correlation(x, y):
@@ -149,7 +152,7 @@ def run_experiment(
         curr_task_name = task_names.get(curr_task_id, curr_task_id)
 
         # Retrieve initial latent from Model Zoo checkpoint via autoencoder
-        ckpt_path = f"checkpoints/model_zoo/task_{curr_task_id}.pt"
+        ckpt_path = f"smoke_results/model_zoo/task_{curr_task_id}.pt"
         if os.path.exists(ckpt_path):
             ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
             with torch.no_grad():
@@ -277,9 +280,11 @@ def main():
     )
     parser.add_argument("--vla_config", type=str, default="configs/vla_config.yaml")
     parser.add_argument("--tasks_config", type=str, default="configs/tasks_config.yaml")
-    parser.add_argument("--aligned_ae", type=str, default="./checkpoints/weight_alignment/aligned_weight_autoencoder.pt")
+    parser.add_argument("--aligned_ae", type=str, default="./smoke_results/weight_alignment/aligned_weight_autoencoder.pt")
     parser.add_argument("--refine_steps", type=int, default=20)
+    parser.add_argument("--smoke-test", action="store_true", help="Acknowledge this is the legacy PyTorch proxy")
     args = parser.parse_args()
+    require_explicit_smoke_test(args.smoke_test)
 
     with open(args.vla_config) as f:
         vla_cfg = yaml.safe_load(f)

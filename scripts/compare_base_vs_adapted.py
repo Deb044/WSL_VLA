@@ -2,7 +2,7 @@
 """
 scripts/compare_base_vs_adapted.py
 
-Direct Head-to-Head Empirical Benchmark:
+Legacy PyTorch proxy head-to-head smoke fixture:
 Compares the unadapted Base VLA against the VLA equipped with task-specific
 factorized LoRA adapters.
 Evaluates Action MSE, Directional Cosine Similarity, and Gripper Precision.
@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from models import build_vla_model
 from data.dataset import LiberoTaskDataset
+from wsl_vla.smoke_guard import require_explicit_smoke_test
 
 
 def evaluate_loader(model, data_loader, device):
@@ -66,7 +67,9 @@ def main():
     )
     parser.add_argument("--steps", type=int, default=50, help="Number of optimizer steps for adaptation mode (default: 50)")
     parser.add_argument("--num_samples", type=int, default=500, help="Number of demonstration samples per task")
+    parser.add_argument("--smoke-test", action="store_true", help="Acknowledge this is the legacy PyTorch proxy")
     args = parser.parse_args()
+    require_explicit_smoke_test(args.smoke_test)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with open("configs/vla_config.yaml") as f:
@@ -101,7 +104,7 @@ def main():
     zero_weights = torch.zeros(vla.num_layers, 3, 16, vla.hidden_dim)
 
     for idx, tid in enumerate(tasks, 1):
-        ckpt_path = f"checkpoints/model_zoo/task_{tid}.pt"
+        ckpt_path = f"smoke_results/model_zoo/task_{tid}.pt"
         tname = tid
         if os.path.exists(ckpt_path):
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)

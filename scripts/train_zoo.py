@@ -2,9 +2,7 @@
 """
 scripts/train_zoo.py
 
-Resilient, idempotent multi-task training loop for constructing the Model Zoo.
-Uses build_vla_model() to dynamically instantiate any registered VLA backbone
-(e.g., Octo-Small, SmallVLA, OpenVLA) directly from configs/vla_config.yaml.
+Legacy PyTorch proxy smoke-test trainer. It cannot create a research model zoo.
 """
 import os
 import sys
@@ -22,6 +20,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from models import build_vla_model, TaskEvidenceExtractor
 from data.dataset import LiberoTaskDataset
+from wsl_vla.smoke_guard import require_explicit_smoke_test, write_smoke_marker
 
 
 logging.basicConfig(
@@ -196,6 +195,7 @@ def main():
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--limit_tasks", type=int, default=None, help="Train only first N tasks (for debug)")
     parser.add_argument("--force", action="store_true", help="Force re-training even if checkpoints already exist")
+    parser.add_argument("--smoke-test", action="store_true", help="Acknowledge this is the legacy PyTorch proxy")
     args = parser.parse_args()
 
     with open(args.vla_config, "r") as f:
@@ -208,7 +208,9 @@ def main():
         tasks_cfg = yaml.safe_load(f)
 
     output_dir = vla_cfg["paths"]["checkpoints_dir"]
+    require_explicit_smoke_test(args.smoke_test, output_directories=(output_dir,))
     os.makedirs(output_dir, exist_ok=True)
+    write_smoke_marker(output_dir, command="scripts/train_zoo.py")
 
     # Device selection: NVIDIA CUDA -> Apple Silicon MPS -> CPU
     if torch.cuda.is_available():

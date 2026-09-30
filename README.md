@@ -73,7 +73,11 @@ task order before training begins.
 
 Start with `docs/METHODOLOGY1_RUNBOOK.md` for the exact execution order. See
 `docs/IMPLEMENTATION_STATUS.md` for implemented versus not-yet-executed work,
-and `docs/RESEARCH_PIPELINE.md` for detailed data contracts.
+and `docs/RESEARCH_PIPELINE.md` for detailed data contracts. Once the four data
+manifests exist, `scripts/plan_methodology1_jobs.py` emits the complete locked
+dependency graph for collaborator or cluster execution. The final
+`scripts/audit_methodology1_study.py` command fails unless the artifact tree is
+publication-complete and provenance-consistent.
 
 ## Implemented research utilities
 

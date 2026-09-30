@@ -10,6 +10,7 @@ def test_study_audit_is_machine_readable_and_fail_closed(tmp_path):
     assert {check["name"] for check in report["checks"]} >= {
         "population_verification",
         "four_alignment_folds",
+        "development_pilot_24_run_grid",
         "continual_96_run_grid",
         "ood_12_run_grid",
         "component_swap_12_run_grid",

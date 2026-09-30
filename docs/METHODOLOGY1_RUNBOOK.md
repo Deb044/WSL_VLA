@@ -24,6 +24,19 @@ Each `data/libero/<suite>/manifest.json` must list ten ordered
 `{task_index, instruction, file}` items matching `configs/reference_tasks.yaml`.
 Never derive task identity from filesystem order.
 
+After the data manifests exist, generate the complete dependency graph used by
+collaborators or a cluster scheduler:
+
+```bash
+python scripts/plan_methodology1_jobs.py \
+  --research-root "$M1_ROOT" --data-root data/libero \
+  --output "$M1_ROOT/methodology1_jobs.jsonl"
+```
+
+The JSONL plan contains stable job IDs, argument arrays, dependencies, expected
+outputs, and GPU requirements. It is the machine-readable counterpart of the
+steps below; generating it does not execute experiments.
+
 ## 2. Mandatory gates
 
 ```bash
@@ -213,3 +226,6 @@ active cluster run, add `--allow-incomplete` to save a progress snapshot.
 - Do not combine artifacts from different Git commits, base hashes, dataset
   hashes, adapter specs, or alignment checkpoints.
 - Transfer immutable artifacts and verify recorded hashes on the destination.
+- A scheduler may dispatch only jobs whose `dependencies` in
+  `methodology1_jobs.jsonl` completed successfully. Preserve the JSONL and its
+  summary alongside the final results.

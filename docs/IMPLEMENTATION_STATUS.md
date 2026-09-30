@@ -21,11 +21,13 @@ official WSL/CUDA experiment has already been executed.
 | Four-fold OOD reporting | Implemented | `scripts/report_ood_study.py` |
 | Shared-state continual protocol and eight controls | Implemented | `scripts/run_official_continual.py` |
 | One-task and two-task scaling gates | Implemented | `scripts/run_one_task_learning_gate.py`, `--task-count 2` |
+| One-suite/three-seed/eight-condition pilot gate | Implemented in job graph | `scripts/plan_methodology1_jobs.py` |
 | Consecutive component swaps | Implemented | `scripts/run_component_swaps.py` |
 | Component-swap aggregation and drift correlations | Implemented | `scripts/report_component_swaps.py` |
 | Recovery-step curves | Implemented for LoRA shared runs | `scripts/run_recovery_probe.py` |
 | Four-fold/three-seed reporting | Implemented | `scripts/report_publication_study.py` |
 | Machine-checkable completion/provenance audit | Implemented | `scripts/audit_methodology1_study.py` |
+| Distributed job graph and execution ordering | Implemented | `scripts/plan_methodology1_jobs.py` |
 | Official WSL/CUDA integration execution | Not yet evidenced | Run `METHODOLOGY1_RUNBOOK.md` |
 | Final research numbers and figures | Not yet produced | Requires collaborator compute |
 | Large-VLA confirmation | Explicitly deferred | Cluster phase after Octo-Small |

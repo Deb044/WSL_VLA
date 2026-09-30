@@ -149,6 +149,16 @@ def audit_methodology1_study(root: str | Path) -> dict[str, Any]:
             observed_records=observed_records,
         )
 
+    pilot = [
+        (
+            root / "development/continual/ten_task_study/libero_spatial" / f"seed_{seed}" / condition,
+            "evaluation.jsonl",
+            55,
+        )
+        for seed in SEEDS
+        for condition in CONDITIONS
+    ]
+    audit_manifest_runs("development_pilot_24_run_grid", pilot)
     continual = [
         (
             publication / "continual/ten_task_study" / suite / f"seed_{seed}" / condition,

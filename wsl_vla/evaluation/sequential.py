@@ -34,6 +34,8 @@ class RolloutOutcome:
 
 TrainStage = Callable[[State, str, int], StageUpdate[State]]
 Rollout = Callable[[State, str, int, int], RolloutOutcome]
+StageSink = Callable[[int, str, StageUpdate[State]], None]
+RecordSink = Callable[[EvaluationRecord], None]
 
 
 def run_sequential_protocol(
@@ -47,6 +49,8 @@ def run_sequential_protocol(
     seed: int,
     condition: str,
     rollout_count: int,
+    stage_sink: StageSink[State] | None = None,
+    record_sink: RecordSink | None = None,
 ) -> tuple[State, tuple[EvaluationRecord, ...]]:
     """Train one evolving state and evaluate that same state on all seen tasks.
 
@@ -68,6 +72,8 @@ def run_sequential_protocol(
             raise ValueError("train_stage must return a SHA-256 checkpoint identity")
         state = update.state
         train_seconds = perf_counter() - started
+        if stage_sink is not None:
+            stage_sink(stage, task_id, update)
         for evaluated_index, evaluated_task in enumerate(task_ids[: stage + 1]):
             evaluation_started = perf_counter()
             outcome = rollout(state, evaluated_task, rollout_count, seed)
@@ -99,4 +105,6 @@ def run_sequential_protocol(
             )
             _ = record.success_rate
             records.append(record)
+            if record_sink is not None:
+                record_sink(record)
     return state, tuple(records)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from wsl_vla.octo.continual import _validate_batches, tree_nbytes
+from wsl_vla.octo.continual import _validate_batch, _validate_batches, tree_nbytes
 
 
 def test_tree_nbytes_counts_numeric_array_leaves():
@@ -26,3 +26,16 @@ def test_official_stage_batches_fail_closed_on_missing_fields():
         _validate_batches([{"observation": {}}], 1)
     with pytest.raises(ValueError, match="positive"):
         _validate_batches([valid], 0)
+
+
+def test_callable_stream_batch_validation_does_not_require_a_probe_epoch():
+    _validate_batch(
+        {
+            "observation": {},
+            "task": {},
+            "action": np.zeros(1),
+            "action_pad_mask": np.ones(1),
+        }
+    )
+    with pytest.raises(ValueError, match="official Octo fields"):
+        _validate_batch({"observation": {}})

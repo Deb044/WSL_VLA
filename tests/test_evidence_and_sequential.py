@@ -76,3 +76,42 @@ def test_sequential_runner_rejects_rollouts_without_initialization_provenance():
             condition="condition",
             rollout_count=2,
         )
+
+
+def test_sequential_runner_persists_stages_and_records_incrementally():
+    events = []
+
+    def train(state, task_id, stage):
+        return StageUpdate(state + 1, "a" * 64, {})
+
+    def rollout(state, task_id, count, seed):
+        return RolloutOutcome(
+            successes=1,
+            initialization_indices=(0,),
+            rollout_seeds=(seed,),
+        )
+
+    run_sequential_protocol(
+        initial_state=0,
+        task_ids=("a", "b"),
+        train_stage=train,
+        rollout=rollout,
+        run_id="test",
+        suite="suite",
+        seed=1,
+        condition="condition",
+        rollout_count=1,
+        stage_sink=lambda stage, task, update: events.append(
+            ("stage", stage, task, update.state)
+        ),
+        record_sink=lambda record: events.append(
+            ("record", record.training_stage, record.evaluated_task_id)
+        ),
+    )
+    assert events == [
+        ("stage", 0, "a", 1),
+        ("record", 0, "a"),
+        ("stage", 1, "b", 2),
+        ("record", 1, "a"),
+        ("record", 1, "b"),
+    ]

@@ -54,15 +54,19 @@ def _python_tree_leaves(tree: Any) -> list[Any]:
     return [tree]
 
 
+def _validate_batch(batch: Mapping[str, Any], index: int = 0) -> None:
+    required = {"observation", "task", "action", "action_pad_mask"}
+    if required - set(batch):
+        raise ValueError(f"batch {index} lacks official Octo fields")
+
+
 def _validate_batches(batches: Sequence[Mapping[str, Any]], steps: int) -> None:
     if steps <= 0:
         raise ValueError("training steps must be positive")
     if not batches:
         raise ValueError("training requires at least one real Octo batch")
-    required = {"observation", "task", "action", "action_pad_mask"}
     for index, batch in enumerate(batches):
-        if required - set(batch):
-            raise ValueError(f"batch {index} lacks official Octo fields")
+        _validate_batch(batch, index)
 
 
 @dataclass(frozen=True)
@@ -87,13 +91,9 @@ def train_shared_lora_stage(
 ) -> LoRAStageResult:
     """Continue one adapter state; optimizer moments reset at task boundaries."""
 
-    if callable(batches):
-        try:
-            probe = next(iter(batches()))
-        except StopIteration as exc:
-            raise ValueError("batch factory produced no LoRA training batches") from exc
-        _validate_batches((probe,), steps)
-    else:
+    if steps <= 0:
+        raise ValueError("training steps must be positive")
+    if not callable(batches):
         _validate_batches(batches, steps)
     if learning_rate <= 0 or gradient_accumulation_steps <= 0:
         raise ValueError("learning rate and accumulation steps must be positive")
@@ -122,6 +122,7 @@ def train_shared_lora_stage(
                 produced = False
                 for batch in batches():
                     produced = True
+                    _validate_batch(batch)
                     yield batch
                 if not produced:
                     raise ValueError("batch factory produced no LoRA training batches")

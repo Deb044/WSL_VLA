@@ -153,6 +153,33 @@ class AlignmentCheckpointMetadata:
 
 
 @dataclass
+class AlignmentCheckpoint:
+    """Reloaded alignment system and all inference-time geometric artifacts."""
+
+    params: Any
+    model: Any
+    mappers: Mapping[str, Any]
+    shells: Mapping[str, Any]
+    token_mask: np.ndarray
+    component_ids: np.ndarray
+    layer_ids: np.ndarray
+    metadata: Mapping[str, Any]
+    schema_version: int = SCHEMA_VERSION
+
+    def validate(self) -> None:
+        if self.schema_version != SCHEMA_VERSION:
+            raise ValueError(f"unsupported AlignmentCheckpoint schema {self.schema_version}")
+        if set(self.mappers) != {"vision", "language", "action"}:
+            raise ValueError("alignment checkpoint requires all three modality mappers")
+        if set(self.shells) != {"vision", "language", "action"}:
+            raise ValueError("alignment checkpoint requires all three empirical shells")
+        if self.token_mask.ndim != 2 or self.component_ids.shape != self.token_mask.shape[:1]:
+            raise ValueError("alignment token layout is inconsistent")
+        if self.layer_ids.shape != self.component_ids.shape:
+            raise ValueError("alignment layer layout is inconsistent")
+
+
+@dataclass
 class RunManifest:
     run_id: str
     command: Sequence[str]

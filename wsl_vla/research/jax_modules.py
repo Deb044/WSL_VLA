@@ -273,6 +273,15 @@ if nn is not None:  # pragma: no branch
                 latents, token_mask, component_ids, layer_ids, train=train
             )
 
+        def encode_evidence(
+            self, vision_features, vision_mask, language_features, action_features
+        ):
+            return {
+                "vision": self.vision_evidence(vision_features, vision_mask),
+                "language": self.language_evidence(language_features),
+                "action": self.action_evidence(action_features),
+            }
+
 
 else:
 

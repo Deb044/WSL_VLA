@@ -401,6 +401,12 @@ def main() -> int:
     atomic_write(output / "alignment_params.msgpack", flax.serialization.to_bytes(best_params))
     np.savez_compressed(output / "linear_mappers.npz", **mapper_payload)
     np.savez_compressed(output / "empirical_shells.npz", **shell_payload)
+    np.savez_compressed(
+        output / "token_layout.npz",
+        token_mask=data["token_mask"][0],
+        component_ids=data["component_ids"][0],
+        layer_ids=data["layer_ids"][0],
+    )
     metadata = {
         "schema_version": 1,
         "archive": str(Path(args.archive).resolve()),
@@ -421,6 +427,13 @@ def main() -> int:
             "hidden_dim": args.hidden_dim,
             "layers": args.layers,
             "heads": args.heads,
+            "max_tokens": int(data["tokens"].shape[1]),
+            "max_layers": int(data["layer_ids"].max()) + 1,
+            "vision_feature_dim": int(data["vision_features"].shape[-1]),
+            "language_feature_dim": int(data["language_features"].shape[-1]),
+            "action_feature_dim": int(data["action_features"].shape[-1]),
+            "task_count": int(data["task_labels"].max()) + 1,
+            "initial_temperature": float(alignment_config["temperature"]),
             "tasks_per_batch": tasks_per_batch,
             "samples_per_task": samples_per_task,
             "effective_batch_size": tasks_per_batch * samples_per_task,

@@ -7,6 +7,7 @@ from wsl_vla.alignment.evidence import masked_action_statistics, pad_feature_set
 from wsl_vla.evaluation.sequential import (
     RolloutOutcome,
     StageUpdate,
+    run_independent_oracle_protocol,
     run_sequential_protocol,
 )
 
@@ -115,3 +116,36 @@ def test_sequential_runner_persists_stages_and_records_incrementally():
         ("record", 1, "a"),
         ("record", 1, "b"),
     ]
+
+
+def test_oracle_trains_each_task_from_same_initial_state_and_selects_own_adapter():
+    trained_from = []
+    evaluated = []
+
+    def train(state, task_id, stage):
+        trained_from.append((state, task_id))
+        task_state = f"{state}:{task_id}"
+        return StageUpdate(
+            task_state,
+            hashlib.sha256(task_state.encode()).hexdigest(),
+            {},
+        )
+
+    def rollout(state, task_id, count, seed):
+        evaluated.append((state, task_id))
+        return RolloutOutcome(1, (0,), (seed,))
+
+    states, records = run_independent_oracle_protocol(
+        initial_state="base",
+        task_ids=("a", "b"),
+        train_task=train,
+        rollout=rollout,
+        run_id="oracle",
+        suite="suite",
+        seed=9,
+        rollout_count=1,
+    )
+    assert trained_from == [("base", "a"), ("base", "b")]
+    assert states == {"a": "base:a", "b": "base:b"}
+    assert evaluated == [("base:a", "a"), ("base:a", "a"), ("base:b", "b")]
+    assert {record.condition for record in records} == {"independent_adapter_oracle"}

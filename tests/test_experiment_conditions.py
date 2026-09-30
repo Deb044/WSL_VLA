@@ -8,6 +8,8 @@ from wsl_vla.experiments.conditions import (
     PRIMARY_CONDITIONS,
     ReplayTransition,
     locked_condition_specs,
+    load_gamma_selection,
+    save_gamma_selection,
 )
 
 
@@ -54,6 +56,15 @@ def test_test_suite_cannot_select_gammas():
     )
     with pytest.raises(ValueError, match="held-out"):
         locked_condition_specs(invalid)
+
+
+def test_gamma_selection_round_trip_is_bound_to_held_out_fold(tmp_path):
+    expected = selection()
+    path = tmp_path / "gammas.json"
+    save_gamma_selection(expected, path)
+    assert load_gamma_selection(path, held_out_suite="libero_10") == expected
+    with pytest.raises(ValueError, match="different held-out suite"):
+        load_gamma_selection(path, held_out_suite="libero_goal")
 
 
 def test_replay_memory_freezes_exact_deterministic_per_task_samples():

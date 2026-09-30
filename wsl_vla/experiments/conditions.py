@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -48,6 +50,45 @@ class GammaSelection:
             raise ValueError("proposed gamma_language must exceed gamma_action")
         if self.early_stopping_patience <= 0:
             raise ValueError("early stopping must be selected on validation data")
+
+
+def save_gamma_selection(selection: GammaSelection, path: str | Path) -> None:
+    """Persist the frozen validation result consumed by held-out test runs."""
+
+    selection.validate()
+    payload = {
+        "schema_version": 1,
+        "held_out_suite": selection.held_out_suite,
+        "validation_suites": list(selection.validation_suites),
+        "proposed": {name: float(selection.proposed[name]) for name in MODALITIES},
+        "uniform": float(selection.uniform),
+        "early_stopping_patience": int(selection.early_stopping_patience),
+    }
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def load_gamma_selection(path: str | Path, *, held_out_suite: str) -> GammaSelection:
+    """Load hyperparameters and require they were selected for this exact fold."""
+
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1:
+        raise ValueError("unsupported gamma-selection schema")
+    selection = GammaSelection(
+        held_out_suite=str(payload["held_out_suite"]),
+        validation_suites=tuple(str(value) for value in payload["validation_suites"]),
+        proposed={str(key): float(value) for key, value in payload["proposed"].items()},
+        uniform=float(payload["uniform"]),
+        early_stopping_patience=int(payload["early_stopping_patience"]),
+    )
+    selection.validate()
+    if selection.held_out_suite != held_out_suite:
+        raise ValueError(
+            "gamma selection belongs to a different held-out suite: "
+            f"{selection.held_out_suite} != {held_out_suite}"
+        )
+    return selection
 
 
 @dataclass(frozen=True)

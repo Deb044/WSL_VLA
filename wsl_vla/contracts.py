@@ -216,14 +216,37 @@ class EvaluationRecord:
     checkpoint_sha256: str
     latent_drift: Mapping[str, float]
     wall_time_seconds: float
+    initialization_indices: Sequence[int]
+    rollout_seeds: Sequence[int]
+    evaluation_wall_time_seconds: float
+    task_loss: float | None = None
+    regularization_loss: float | None = None
+    adapter_bytes: int = 0
+    evidence_bytes: int = 0
+    peak_vram_bytes: int | None = None
+    peak_ram_bytes: int | None = None
+    component_swap_condition: str | None = None
+    failure: Mapping[str, Any] | None = None
     schema_version: int = SCHEMA_VERSION
 
     @property
     def success_rate(self) -> float:
+        if self.schema_version != SCHEMA_VERSION:
+            raise ValueError(f"unsupported EvaluationRecord schema {self.schema_version}")
         if self.rollout_count <= 0:
             raise ValueError("rollout_count must be positive")
         if not 0 <= self.successes <= self.rollout_count:
             raise ValueError("successes must lie in [0, rollout_count]")
+        if len(self.initialization_indices) != self.rollout_count:
+            raise ValueError("every rollout must record its fixed initialization index")
+        if len(set(self.initialization_indices)) != self.rollout_count:
+            raise ValueError("fixed initialization indices cannot repeat within a cell")
+        if len(self.rollout_seeds) != self.rollout_count:
+            raise ValueError("every rollout must record its deterministic seed")
+        if min(self.wall_time_seconds, self.evaluation_wall_time_seconds) < 0:
+            raise ValueError("training and evaluation wall times cannot be negative")
+        if min(self.adapter_bytes, self.evidence_bytes) < 0:
+            raise ValueError("memory sizes cannot be negative")
         return self.successes / self.rollout_count
 
 

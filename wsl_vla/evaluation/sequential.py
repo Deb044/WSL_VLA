@@ -17,10 +17,23 @@ class StageUpdate(Generic[State]):
     state: State
     checkpoint_sha256: str
     latent_drift: Mapping[str, float]
+    task_loss: float | None = None
+    regularization_loss: float | None = None
+    adapter_bytes: int = 0
+    evidence_bytes: int = 0
+    peak_vram_bytes: int | None = None
+    peak_ram_bytes: int | None = None
+
+
+@dataclass(frozen=True)
+class RolloutOutcome:
+    successes: int
+    initialization_indices: tuple[int, ...]
+    rollout_seeds: tuple[int, ...]
 
 
 TrainStage = Callable[[State, str, int], StageUpdate[State]]
-Rollout = Callable[[State, str, int, int], int]
+Rollout = Callable[[State, str, int, int], RolloutOutcome]
 
 
 def run_sequential_protocol(
@@ -56,7 +69,11 @@ def run_sequential_protocol(
         state = update.state
         train_seconds = perf_counter() - started
         for evaluated_index, evaluated_task in enumerate(task_ids[: stage + 1]):
-            successes = int(rollout(state, evaluated_task, rollout_count, seed))
+            evaluation_started = perf_counter()
+            outcome = rollout(state, evaluated_task, rollout_count, seed)
+            evaluation_seconds = perf_counter() - evaluation_started
+            if not isinstance(outcome, RolloutOutcome):
+                raise TypeError("publication rollouts must return initialization provenance")
             record = EvaluationRecord(
                 run_id=run_id,
                 suite=suite,
@@ -66,10 +83,19 @@ def run_sequential_protocol(
                 evaluated_task_index=evaluated_index,
                 evaluated_task_id=evaluated_task,
                 rollout_count=rollout_count,
-                successes=successes,
+                successes=int(outcome.successes),
                 checkpoint_sha256=update.checkpoint_sha256,
                 latent_drift=dict(update.latent_drift),
                 wall_time_seconds=train_seconds,
+                initialization_indices=outcome.initialization_indices,
+                rollout_seeds=outcome.rollout_seeds,
+                evaluation_wall_time_seconds=evaluation_seconds,
+                task_loss=update.task_loss,
+                regularization_loss=update.regularization_loss,
+                adapter_bytes=update.adapter_bytes,
+                evidence_bytes=update.evidence_bytes,
+                peak_vram_bytes=update.peak_vram_bytes,
+                peak_ram_bytes=update.peak_ram_bytes,
             )
             _ = record.success_rate
             records.append(record)

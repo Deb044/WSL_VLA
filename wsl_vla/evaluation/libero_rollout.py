@@ -80,6 +80,17 @@ class TaskRolloutSummary:
     def initialization_indices(self) -> tuple[int, ...]:
         return tuple(episode.initialization_index for episode in self.episodes)
 
+    def as_outcome(self):
+        """Convert to the strict shared-state runner contract without a cycle."""
+
+        from .sequential import RolloutOutcome
+
+        return RolloutOutcome(
+            successes=self.successes,
+            initialization_indices=self.initialization_indices,
+            rollout_seeds=tuple(episode.episode_seed for episode in self.episodes),
+        )
+
 
 class RolloutPolicy(Protocol):
     checkpoint_sha256: str

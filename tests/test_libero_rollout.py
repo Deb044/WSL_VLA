@@ -124,6 +124,9 @@ def test_evaluator_uses_fixed_states_warmup_and_closes_environment(tmp_path):
     assert result.successes == 3
     assert result.rollout_count == 3
     assert result.initialization_indices == fixed_initialization_indices(60, 3, seed=17)
+    outcome = result.as_outcome()
+    assert outcome.successes == 3
+    assert outcome.initialization_indices == result.initialization_indices
     assert len(policy.resets) == 3
     assert all(episode.steps == 2 for episode in result.episodes)
     assert FakeEnvironment.instances[0].closed

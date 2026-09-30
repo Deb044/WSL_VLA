@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 
 from wsl_vla.alignment.evidence import masked_action_statistics, pad_feature_set
-from wsl_vla.evaluation.sequential import StageUpdate, run_sequential_protocol
+from wsl_vla.evaluation.sequential import (
+    RolloutOutcome,
+    StageUpdate,
+    run_sequential_protocol,
+)
 
 
 def test_action_statistics_respect_episode_boundaries_and_masks():
@@ -33,7 +37,11 @@ def test_sequential_runner_evaluates_current_state_not_task_snapshots():
 
     def rollout(state, task_id, count, seed):
         observed.append((state, task_id))
-        return min(count, len(state))
+        return RolloutOutcome(
+            successes=min(count, len(state)),
+            initialization_indices=tuple(range(count)),
+            rollout_seeds=tuple(seed * 100 + index for index in range(count)),
+        )
 
     state, records = run_sequential_protocol(
         initial_state=(),
@@ -48,4 +56,23 @@ def test_sequential_runner_evaluates_current_state_not_task_snapshots():
     )
     assert state == ("a", "b", "c")
     assert len(records) == 6
+    assert records[-1].initialization_indices == tuple(range(10))
     assert observed[-3:] == [(("a", "b", "c"), "a"), (("a", "b", "c"), "b"), (("a", "b", "c"), "c")]
+
+
+def test_sequential_runner_rejects_rollouts_without_initialization_provenance():
+    def train(state, task_id, stage):
+        return StageUpdate(state, "a" * 64, {})
+
+    with pytest.raises(TypeError, match="initialization provenance"):
+        run_sequential_protocol(
+            initial_state=None,
+            task_ids=("a",),
+            train_stage=train,
+            rollout=lambda state, task, count, seed: count,
+            run_id="test",
+            suite="suite",
+            seed=1,
+            condition="condition",
+            rollout_count=2,
+        )

@@ -37,6 +37,11 @@ def _research_imports():
 def _group_component(name: str) -> int:
     if name.startswith("task_"):
         return 1  # language
+    # Octo can repeat task tokens at each observation timestep and renames those
+    # groups ``obs_task_*``. They remain language evidence and must not be
+    # routed through the visual adapter merely because of the synthetic prefix.
+    if name.startswith("obs_task_"):
+        return 1  # language
     if name.startswith("obs_"):
         return 0  # vision
     if name.startswith("readout_"):
@@ -162,6 +167,7 @@ class ResearchOctoBundle:
     adapter_alpha: float
     diffusion_kernel_paths: tuple[tuple[str, ...], ...]
     diffusion_factors: Any
+    reference_transformer_outputs: Any
 
 
 def load_research_octo(
@@ -174,7 +180,11 @@ def load_research_octo(
 ) -> ResearchOctoBundle:
     """Load official weights, create the patched module, and merge by key/shape."""
 
-    _, jax, _, _, _, _, OctoModel, merge_params = _research_imports()
+    _, jax, _, octo_module, BlockTransformer, _, OctoModel, merge_params = _research_imports()
+    # ``install_octo_modality_patch`` mutates Octo's module global. Restore the
+    # official class first so repeated loads in one process cannot accidentally
+    # treat an already-patched graph as the pretrained reference.
+    octo_module.BlockTransformer = BlockTransformer
     resolved_checkpoint = checkpoint
     resolved_revision = "local-unresolved"
     if checkpoint.startswith("hf://"):
@@ -194,6 +204,21 @@ def load_research_octo(
     base_sha256 = sha256_array_tree(pretrained.params)
     if resolved_revision == "local-unresolved":
         resolved_revision = f"local-sha256:{base_sha256}"
+    reference_observations = pretrained.example_batch["observation"]
+    reference_tasks = pretrained.example_batch["task"]
+    reference_timestep_mask = reference_observations["timestep_pad_mask"]
+    # Materialize the true official output before changing Octo's module global.
+    # ``device_get`` also closes the door on asynchronous dispatch observing the
+    # later monkeypatch.
+    reference_transformer_outputs = jax.device_get(
+        pretrained.run_transformer(
+            reference_observations,
+            reference_tasks,
+            reference_timestep_mask,
+            train=False,
+        )
+    )
+
     install_octo_modality_patch(rank=rank, alpha=alpha)
     research = OctoModel.from_config(
         pretrained.config,
@@ -222,6 +247,7 @@ def load_research_octo(
         alpha,
         diffusion_paths,
         diffusion_factors,
+        reference_transformer_outputs,
     )
 
 
@@ -234,7 +260,10 @@ def assert_zero_adapter_equivalence(bundle: ResearchOctoBundle, *, atol: float =
     observations = bundle.pretrained_model.example_batch["observation"]
     tasks = bundle.pretrained_model.example_batch["task"]
     timestep_mask = observations["timestep_pad_mask"]
-    original = bundle.pretrained_model.run_transformer(observations, tasks, timestep_mask, train=False)
+    # This was computed before Octo's module-global BlockTransformer was
+    # patched. Re-running the pretrained module here would no longer be a valid
+    # unmodified reference.
+    original = bundle.reference_transformer_outputs
     parameters = apply_external_adapters(
         bundle.research_model.params,
         bundle.diffusion_factors,

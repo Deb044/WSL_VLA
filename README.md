@@ -37,7 +37,9 @@ The official path targets Ubuntu/WSL2, Python 3.10 or 3.11, CUDA, and an NVIDIA
 GPU with at least 8 GB memory. Octo is pinned to commit
 `241fb3514b7c40957a86d869fecb7c7fc353f540`; the model configuration pins
 `rail-berkeley/octo-small-1.5` and records the resolved checkpoint hash in every
-run.
+run. LIBERO is pinned to commit
+`8f1084e3132a39270c3a13ebe37270a43ece2a01`, and preflight verifies both VCS
+identities from their installed package metadata.
 
 ```bash
 export XLA_PYTHON_CLIENT_PREALLOCATE=false

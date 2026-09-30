@@ -17,6 +17,7 @@ REQUIRED_SUITES = (
     "libero_goal",
     "libero_10",
 )
+LIBERO_GIT_REVISION = "8f1084e3132a39270c3a13ebe37270a43ece2a01"
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,15 @@ def validate_research_config(config: Mapping[str, Any]) -> None:
         raise ValueError("publication model zoo requires three ordered late checkpoints")
     if config.get("model", {}).get("octo_git_revision") is None:
         raise ValueError("Octo git revision must be pinned")
+    if config.get("simulator", {}).get("git_revision") != LIBERO_GIT_REVISION:
+        raise ValueError("LIBERO git revision differs from the locked research version")
+    simulator = config.get("simulator", {})
+    if min(
+        int(simulator.get("camera_height", 0)),
+        int(simulator.get("camera_width", 0)),
+        int(simulator.get("max_episode_steps", 0)),
+    ) <= 0 or int(simulator.get("warmup_steps", -1)) < 0:
+        raise ValueError("LIBERO camera and rollout horizons are invalid")
     alignment = config.get("alignment", {})
     if int(alignment.get("tasks_per_batch", 0)) < 2:
         raise ValueError("alignment requires at least two task identities per batch")

@@ -19,18 +19,24 @@ from wsl_vla.data.libero import (
     load_suite_manifest,
 )
 from wsl_vla.experiments.protocol import (
+    LIBERO_GIT_REVISION,
     expand_population_runs,
     load_yaml,
     publication_folds,
     validate_reference_tasks,
     validate_research_config,
 )
-from wsl_vla.experiments.provenance import capture_environment, capture_hardware, sha256_file
+from wsl_vla.experiments.provenance import (
+    assert_installed_vcs_revision,
+    capture_environment,
+    capture_hardware,
+    sha256_file,
+)
 from wsl_vla.octo.bridge import OCTO_GIT_REVISION
 
 
-RESEARCH_MODULES = ("jax", "flax", "optax", "octo", "h5py", "yaml")
-RESEARCH_DISTRIBUTIONS = ("jax", "flax", "optax", "octo", "h5py", "PyYAML")
+RESEARCH_MODULES = ("jax", "flax", "optax", "octo", "libero", "h5py", "yaml")
+RESEARCH_DISTRIBUTIONS = ("jax", "flax", "optax", "octo", "libero", "h5py", "PyYAML")
 
 
 def main() -> int:
@@ -63,6 +69,19 @@ def main() -> int:
     missing = [name for name in RESEARCH_MODULES if importlib.util.find_spec(name) is None]
     if missing:
         problems.append(f"missing research packages: {', '.join(missing)}")
+    installed_revisions = {}
+    for distribution, expected in (
+        ("octo", OCTO_GIT_REVISION),
+        ("libero", LIBERO_GIT_REVISION),
+    ):
+        if distribution in missing:
+            continue
+        try:
+            installed_revisions[distribution] = assert_installed_vcs_revision(
+                distribution, expected
+            )
+        except RuntimeError as exc:
+            problems.append(str(exc))
     if os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE", "").lower() not in {"false", "0"}:
         problems.append("set XLA_PYTHON_CLIENT_PREALLOCATE=false for the <=8 GB profile")
 
@@ -114,6 +133,8 @@ def main() -> int:
         "ok": not problems,
         "problems": problems,
         "octo_git_revision": OCTO_GIT_REVISION,
+        "libero_git_revision": LIBERO_GIT_REVISION,
+        "installed_vcs_revisions": installed_revisions,
         "expected_population_checkpoints": len(population),
         "folds": [fold.__dict__ for fold in folds],
         "indexed_data": indexed_files,

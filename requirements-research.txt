@@ -8,3 +8,4 @@ jax[cuda11_pip]==0.4.20
 # Official Octo implementation pinned to the revision used when this research
 # path was introduced. Do not replace this with a floating branch.
 octo @ git+https://github.com/octo-models/octo.git@241fb3514b7c40957a86d869fecb7c7fc353f540
+libero @ git+https://github.com/Lifelong-Robot-Learning/LIBERO.git@8f1084e3132a39270c3a13ebe37270a43ece2a01

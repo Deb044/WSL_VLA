@@ -8,6 +8,14 @@ model:
   require_sha256: true
   precision: float32
 
+simulator:
+  id: Lifelong-Robot-Learning/LIBERO
+  git_revision: 8f1084e3132a39270c3a13ebe37270a43ece2a01
+  camera_height: 256
+  camera_width: 256
+  warmup_steps: 5
+  max_episode_steps: 600
+
 adapter:
   rank: 8
   alpha: 16.0

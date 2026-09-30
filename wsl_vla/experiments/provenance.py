@@ -69,6 +69,39 @@ def capture_environment(packages: Iterable[str]) -> dict[str, str]:
     return result
 
 
+def installed_vcs_commit(distribution_name: str) -> str:
+    """Read the immutable commit recorded by a PEP 610 VCS installation."""
+
+    try:
+        distribution = importlib.metadata.distribution(distribution_name)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise RuntimeError(f"required distribution is not installed: {distribution_name}") from exc
+    direct_url = distribution.read_text("direct_url.json")
+    if not direct_url:
+        raise RuntimeError(
+            f"{distribution_name} was not installed from a provenance-bearing VCS URL"
+        )
+    try:
+        payload = json.loads(direct_url)
+        commit = payload["vcs_info"]["commit_id"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{distribution_name} has invalid direct_url.json") from exc
+    if not isinstance(commit, str) or len(commit) != 40:
+        raise RuntimeError(f"{distribution_name} has no full 40-character VCS commit")
+    return commit
+
+
+def assert_installed_vcs_revision(distribution_name: str, expected: str) -> str:
+    if len(expected) != 40:
+        raise ValueError("expected VCS revision must be a full 40-character commit")
+    actual = installed_vcs_commit(distribution_name)
+    if actual != expected:
+        raise RuntimeError(
+            f"{distribution_name} revision mismatch: installed={actual}, expected={expected}"
+        )
+    return actual
+
+
 def capture_hardware() -> dict[str, Any]:
     hardware: dict[str, Any] = {
         "machine": platform.machine(),

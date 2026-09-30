@@ -230,6 +230,9 @@ def refine_alignment_latents(
     gammas: Mapping[str, float],
     steps: int,
     learning_rate: float,
+    validation_batches: Any = None,
+    early_stopping_patience: int | None = None,
+    early_stopping_min_delta: float = 0.0,
 ):
     """Refine mapped latents through decoder, Octo, and official diffusion loss."""
 
@@ -246,6 +249,19 @@ def refine_alignment_latents(
             train=True,
         )
         return loss_and_metrics[0]
+
+    def validation_loss(values, batch_and_rng):
+        batch, rng = batch_and_rng
+        decoded = decode_alignment_latents(checkpoint, values)
+        return decoded_token_task_loss(
+            bundle,
+            adapter_spec,
+            decoded,
+            checkpoint.token_mask,
+            batch,
+            rng,
+            train=False,
+        )[0]
 
     # Publication runs fail before optimization if any modality is detached
     # from the real decoded-adapter -> Octo -> diffusion-loss computation.
@@ -279,4 +295,8 @@ def refine_alignment_latents(
         gammas=gammas,
         steps=steps,
         learning_rate=learning_rate,
+        validation_loss=validation_loss if validation_batches is not None else None,
+        validation_batches=validation_batches,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
     )

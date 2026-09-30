@@ -416,6 +416,10 @@ def refine_latents(
     gammas: Mapping[str, float],
     steps: int,
     learning_rate: float,
+    validation_loss: Callable[[Mapping[str, Any], Any], Any] | None = None,
+    validation_batches: Any = None,
+    early_stopping_patience: int | None = None,
+    early_stopping_min_delta: float = 0.0,
 ):
     """Differentiate task loss through decoder and Octo adapter application."""
 
@@ -424,6 +428,17 @@ def refine_latents(
         raise ValueError("refinement requires positive steps")
     if not callable(batches) and not batches:
         raise ValueError("refinement requires at least one batch")
+    validation_enabled = validation_loss is not None
+    if validation_enabled != (validation_batches is not None):
+        raise ValueError("validation loss and batches must be provided together")
+    if validation_enabled and (
+        early_stopping_patience is None or early_stopping_patience <= 0
+    ):
+        raise ValueError("validation refinement requires positive early-stopping patience")
+    if not validation_enabled and early_stopping_patience is not None:
+        raise ValueError("early-stopping patience requires validation data")
+    if early_stopping_min_delta < 0:
+        raise ValueError("early-stopping min_delta cannot be negative")
     current = {name: jnp.asarray(value) for name, value in initial.items()}
     previous = {name: jax.lax.stop_gradient(value) for name, value in current.items()}
 
@@ -447,6 +462,25 @@ def refine_latents(
 
     history = []
     iterator = stream()
+    validation_iterator = None
+    if validation_enabled:
+        def validation_stream():
+            if callable(validation_batches):
+                while True:
+                    produced = False
+                    for batch in validation_batches():
+                        produced = True
+                        yield batch
+                    if not produced:
+                        raise ValueError("validation batch factory produced no batches")
+            else:
+                while True:
+                    yield from validation_batches
+
+        validation_iterator = validation_stream()
+    best = current
+    best_validation = float("inf")
+    stale_checks = 0
     for _ in range(steps):
         (loss, auxiliary), gradients = jax.value_and_grad(objective, has_aux=True)(
             current, next(iterator)
@@ -456,5 +490,19 @@ def refine_latents(
             current,
             gradients,
         )
-        history.append({"loss": loss, **auxiliary})
-    return current, history
+        record = {"loss": loss, **auxiliary}
+        if validation_enabled:
+            observed_validation = float(
+                validation_loss(current, next(validation_iterator))
+            )
+            record["validation_loss"] = observed_validation
+            if observed_validation < best_validation - early_stopping_min_delta:
+                best_validation = observed_validation
+                best = jax.tree_util.tree_map(lambda value: value, current)
+                stale_checks = 0
+            else:
+                stale_checks += 1
+        history.append(record)
+        if validation_enabled and stale_checks >= early_stopping_patience:
+            break
+    return best if validation_enabled else current, history

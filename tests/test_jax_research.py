@@ -47,3 +47,29 @@ def test_task_loss_produces_nonzero_gradients_for_all_modalities():
             initial,
             task_loss=lambda latents: jnp.sum(latents["vision"] + latents["language"]),
         )
+
+
+@pytest.mark.skipif(importlib.util.find_spec("jax") is None, reason="JAX research extra not installed")
+def test_latent_refinement_early_stops_and_restores_best_validation_state():
+    import jax.numpy as jnp
+
+    from wsl_vla.alignment.models import refine_latents
+
+    initial = {name: jnp.asarray([1.0]) for name in ("vision", "language", "action")}
+
+    def train_loss(latents, batch):
+        return sum(jnp.square(value - batch).sum() for value in latents.values())
+
+    refined, history = refine_latents(
+        initial,
+        task_loss=train_loss,
+        batches=[jnp.asarray([0.0])],
+        gammas={name: 0.0 for name in initial},
+        steps=20,
+        learning_rate=0.1,
+        validation_loss=lambda latents, batch: jnp.asarray(1.0),
+        validation_batches=[jnp.asarray([0.0])],
+        early_stopping_patience=2,
+    )
+    assert len(history) == 3
+    assert all(float(refined[name][0]) == pytest.approx(0.8) for name in initial)

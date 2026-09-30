@@ -173,6 +173,9 @@ def train_shared_latent_stage(
     gammas: Mapping[str, float],
     steps: int,
     learning_rate: float,
+    validation_batches: Any = None,
+    early_stopping_patience: int | None = None,
+    early_stopping_min_delta: float = 0.0,
 ) -> LatentStageResult:
     """Refine the previous stage's one shared latent policy in official Octo."""
 
@@ -186,6 +189,9 @@ def train_shared_latent_stage(
         gammas=gammas,
         steps=steps,
         learning_rate=learning_rate,
+        validation_batches=validation_batches,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
     )
     decoded = decode_alignment_latents(checkpoint, refined)
     updates = unpack_effective_tokens_jax(decoded, checkpoint.token_mask, adapter_spec)
@@ -200,7 +206,11 @@ def train_shared_latent_stage(
         )
         for name in ("vision", "language", "action")
     }
-    final = history[-1]
+    final = (
+        min(history, key=lambda item: float(item["validation_loss"]))
+        if "validation_loss" in history[0]
+        else history[-1]
+    )
     return LatentStageResult(
         latents=refined,
         adapter_state=adapter_state,

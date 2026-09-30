@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -78,7 +78,7 @@ class LoRAStageResult:
 def train_shared_lora_stage(
     bundle: Any,
     previous_adapter_state: Mapping[str, Any],
-    batches: Sequence[Mapping[str, Any]],
+    batches: Sequence[Mapping[str, Any]] | Callable[[], Iterable[Mapping[str, Any]]],
     *,
     seed: int,
     steps: int,
@@ -87,7 +87,14 @@ def train_shared_lora_stage(
 ) -> LoRAStageResult:
     """Continue one adapter state; optimizer moments reset at task boundaries."""
 
-    _validate_batches(batches, steps)
+    if callable(batches):
+        try:
+            probe = next(iter(batches()))
+        except StopIteration as exc:
+            raise ValueError("batch factory produced no LoRA training batches") from exc
+        _validate_batches((probe,), steps)
+    else:
+        _validate_batches(batches, steps)
     if learning_rate <= 0 or gradient_accumulation_steps <= 0:
         raise ValueError("learning rate and accumulation steps must be positive")
     jax, optax = _jax_imports()
@@ -109,8 +116,22 @@ def train_shared_lora_stage(
     micro_steps = 0
     update_steps = 0
     final_loss = None
+    def stream():
+        if callable(batches):
+            while True:
+                produced = False
+                for batch in batches():
+                    produced = True
+                    yield batch
+                if not produced:
+                    raise ValueError("batch factory produced no LoRA training batches")
+        else:
+            while True:
+                yield from batches
+
+    iterator = stream()
     while update_steps < steps:
-        batch = batches[micro_steps % len(batches)]
+        batch = next(iterator)
         key, step_key = jax.random.split(key)
         adapter_state, optimizer_state, final_loss = step_fn(
             adapter_state, optimizer_state, batch, step_key

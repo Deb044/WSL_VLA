@@ -181,7 +181,7 @@ def refine_alignment_latents(
     bundle: Any,
     adapter_spec: AdapterSpec,
     initial: Mapping[str, Any],
-    batches: list[tuple[Mapping[str, Any], Any]],
+    batches: Any,
     gammas: Mapping[str, float],
     steps: int,
     learning_rate: float,
@@ -204,9 +204,10 @@ def refine_alignment_latents(
 
     # Publication runs fail before optimization if any modality is detached
     # from the real decoded-adapter -> Octo -> diffusion-loss computation.
+    first_batch = next(iter(batches())) if callable(batches) else batches[0]
     assert_task_loss_gradients(
         initial,
-        task_loss=lambda values: task_loss(values, batches[0]),
+        task_loss=lambda values: task_loss(values, first_batch),
     )
     return refine_latents(
         initial,

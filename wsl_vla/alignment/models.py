@@ -405,7 +405,7 @@ def refine_latents(
     initial: Mapping[str, Any],
     *,
     task_loss: Callable[[Mapping[str, Any], Any], Any],
-    batches: list[Any],
+    batches: Any,
     gammas: Mapping[str, float],
     steps: int,
     learning_rate: float,
@@ -413,8 +413,10 @@ def refine_latents(
     """Differentiate task loss through decoder and Octo adapter application."""
 
     require_jax()
-    if steps <= 0 or not batches:
-        raise ValueError("refinement requires positive steps and at least one batch")
+    if steps <= 0:
+        raise ValueError("refinement requires positive steps")
+    if not callable(batches) and not batches:
+        raise ValueError("refinement requires at least one batch")
     current = {name: jnp.asarray(value) for name, value in initial.items()}
     previous = {name: jax.lax.stop_gradient(value) for name, value in current.items()}
 
@@ -423,10 +425,24 @@ def refine_latents(
         regularizer = differential_local_penalty(values, previous, gammas)
         return task + regularizer, {"task_loss": task, "regularizer": regularizer}
 
+    def stream():
+        if callable(batches):
+            while True:
+                produced = False
+                for batch in batches():
+                    produced = True
+                    yield batch
+                if not produced:
+                    raise ValueError("batch factory produced no refinement batches")
+        else:
+            while True:
+                yield from batches
+
     history = []
-    for step in range(steps):
+    iterator = stream()
+    for _ in range(steps):
         (loss, auxiliary), gradients = jax.value_and_grad(objective, has_aux=True)(
-            current, batches[step % len(batches)]
+            current, next(iterator)
         )
         current = jax.tree_util.tree_map(
             lambda value, gradient: value - learning_rate * gradient,

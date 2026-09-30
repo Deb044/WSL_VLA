@@ -21,6 +21,7 @@ official WSL/CUDA experiment has already been executed.
 | Shared-state continual protocol and eight controls | Implemented | `scripts/run_official_continual.py` |
 | One-task and two-task scaling gates | Implemented | `scripts/run_one_task_learning_gate.py`, `--task-count 2` |
 | Consecutive component swaps | Implemented | `scripts/run_component_swaps.py` |
+| Component-swap aggregation and drift correlations | Implemented | `scripts/report_component_swaps.py` |
 | Recovery-step curves | Implemented for LoRA shared runs | `scripts/run_recovery_probe.py` |
 | Four-fold/three-seed reporting | Implemented | `scripts/report_publication_study.py` |
 | Official WSL/CUDA integration execution | Not yet evidenced | Run `METHODOLOGY1_RUNBOOK.md` |

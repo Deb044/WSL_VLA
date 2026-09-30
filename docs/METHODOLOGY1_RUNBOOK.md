@@ -180,6 +180,11 @@ python scripts/report_publication_study.py \
 python scripts/report_ood_study.py "$M1_PUB/ood" \
   --output-json "$M1_PUB/reports/ood_study.json" \
   --output-parquet "$M1_PUB/reports/ood_records.parquet"
+
+python scripts/report_component_swaps.py "$M1_PUB/component_swaps" \
+  --output-json "$M1_PUB/reports/component_swaps.json" \
+  --output-parquet "$M1_PUB/reports/component_swaps.parquet" \
+  --output-figure "$M1_PUB/reports/component_drift_scatter.png"
 ```
 
 The reporter rejects missing cells, mixed run identities, inconsistent rollout

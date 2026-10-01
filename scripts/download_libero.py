@@ -93,7 +93,46 @@ def download_suite(
         except Exception as e:
             print(f"       -> Failed downloading {filename}: {e}")
 
+    generate_suite_manifest(suite_name, target_suite_dir)
     print(f" [SUCCESS] Suite '{suite_name}' staging complete in: {target_suite_dir}\n")
+
+
+def generate_suite_manifest(suite_name: str, suite_dir: str, tasks_yaml: str = "configs/reference_tasks.yaml"):
+    import json
+    import re
+    from pathlib import Path
+    import yaml
+
+    yaml_path = Path(tasks_yaml)
+    if not yaml_path.is_file():
+        yaml_path = Path(__file__).resolve().parents[1] / tasks_yaml
+    if not yaml_path.is_file():
+        return
+
+    with open(yaml_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    if suite_name not in config.get("suites", {}):
+        return
+
+    instructions = config["suites"][suite_name]
+    tasks = []
+    for idx, inst in enumerate(instructions):
+        slug = re.sub(r"[^a-z0-9]+", "_", inst.lower()).strip("_") + "_demo.hdf5"
+        tasks.append({
+            "task_index": idx,
+            "instruction": inst,
+            "file": slug,
+        })
+
+    manifest = {
+        "schema_version": 1,
+        "suite": suite_name,
+        "tasks": tasks,
+    }
+    manifest_path = Path(suite_dir) / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"  [Manifest] Generated suite manifest at: {manifest_path}")
 
 
 def main():

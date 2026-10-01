@@ -16,6 +16,16 @@ from .splits import EpisodeSplit, split_episodes
 REQUIRED_OBSERVATIONS = ("agentview_rgb",)
 
 
+PROPRIO_ALIASES: dict[str, tuple[str, ...]] = {
+    "robot0_eef_pos": ("robot0_eef_pos", "ee_pos"),
+    "robot0_eef_quat": ("robot0_eef_quat", "ee_ori", "ee_states"),
+    "robot0_gripper_qpos": ("robot0_gripper_qpos", "gripper_states"),
+    "ee_pos": ("ee_pos", "robot0_eef_pos"),
+    "ee_ori": ("ee_ori", "robot0_eef_quat"),
+    "gripper_states": ("gripper_states", "robot0_gripper_qpos"),
+}
+
+
 @dataclass(frozen=True)
 class LiberoEpisode:
     episode_id: str
@@ -57,10 +67,12 @@ class StrictLiberoHDF5:
                 if actions.ndim != 2 or actions.shape[0] < 2:
                     raise ValueError(f"{episode_id} has invalid action shape {actions.shape}")
                 for key in self.required_observations:
-                    if key not in demo["obs"]:
+                    candidates = PROPRIO_ALIASES.get(key, (key,))
+                    matched = next((c for c in candidates if c in demo["obs"]), None)
+                    if matched is None:
                         raise ValueError(f"{episode_id} lacks required observation {key}")
-                    if demo["obs"][key].shape[0] != actions.shape[0]:
-                        raise ValueError(f"{episode_id}/{key} length differs from actions")
+                    if demo["obs"][matched].shape[0] != actions.shape[0]:
+                        raise ValueError(f"{episode_id}/{matched} length differs from actions")
             return episode_ids
 
     @property
@@ -82,6 +94,12 @@ class StrictLiberoHDF5:
                     key: np.asarray(value)
                     for key, value in demo["obs"].items()
                 }
+                for alias_k, candidates in PROPRIO_ALIASES.items():
+                    if alias_k not in observations:
+                        for cand in candidates:
+                            if cand in observations:
+                                observations[alias_k] = observations[cand]
+                                break
                 yield LiberoEpisode(
                     episode_id=episode_id,
                     actions=np.asarray(demo["actions"], dtype=np.float32),
@@ -98,7 +116,9 @@ def forbid_synthetic_research_output(*, smoke_test: bool, output_directory: str 
 def load_suite_manifest(
     suite_directory: str | Path,
     expected_instructions: tuple[str, ...] | list[str],
-) -> tuple[Path, ...]:
+    *,
+    allow_missing: bool = False,
+) -> tuple[Path | None, ...]:
     """Resolve ten ordered task files from an explicit, checked sidecar."""
 
     root = Path(suite_directory)
@@ -111,7 +131,7 @@ def load_suite_manifest(
     tasks = payload["tasks"]
     if len(tasks) != len(expected_instructions):
         raise ValueError(f"suite manifest task count differs from protocol: {path}")
-    resolved = []
+    resolved: list[Path | None] = []
     for index, (entry, instruction) in enumerate(zip(tasks, expected_instructions)):
         if entry.get("task_index") != index or entry.get("instruction") != instruction:
             raise ValueError(f"suite manifest order/instruction mismatch at task {index}: {path}")
@@ -120,6 +140,9 @@ def load_suite_manifest(
             raise ValueError(f"suite manifest contains unsafe task filename: {filename!r}")
         task_path = root / filename
         if not task_path.is_file() or task_path.suffix.lower() not in {".h5", ".hdf5"}:
+            if allow_missing:
+                resolved.append(None)
+                continue
             raise FileNotFoundError(f"suite task file is missing: {task_path}")
         resolved.append(task_path)
     return tuple(resolved)

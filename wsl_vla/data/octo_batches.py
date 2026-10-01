@@ -179,20 +179,76 @@ def conform_batch_to_octo_example(batch: Mapping, example_batch: Mapping) -> dic
     if not {"observation", "task", "action"} <= set(example_batch):
         raise ValueError("official Octo example batch is incomplete")
 
+    obs_batch = dict(batch["observation"])
+    if "timestep_pad_mask" in obs_batch:
+        pad_mask = np.asarray(obs_batch["timestep_pad_mask"])
+        B, T = pad_mask.shape
+        if "timestep" not in obs_batch and "timestep" in example_batch.get("observation", {}):
+            obs_batch["timestep"] = np.tile(np.arange(T, dtype=np.int32), (B, 1))
+        if "task_completed" not in obs_batch and "task_completed" in example_batch.get("observation", {}):
+            target_shape = np.asarray(example_batch["observation"]["task_completed"]).shape[2:]
+            obs_batch["task_completed"] = np.zeros((B, T, *target_shape), dtype=bool)
+        if "pad_mask_dict" not in obs_batch and "pad_mask_dict" in example_batch.get("observation", {}):
+            example_pm = example_batch["observation"]["pad_mask_dict"]
+            obs_batch["pad_mask_dict"] = {k: pad_mask for k in example_pm}
+
+    conformed_batch = dict(batch)
+    conformed_batch["observation"] = obs_batch
+
+    task_batch = dict(batch["task"])
+    if "language_instruction" in task_batch:
+        lang_val = task_batch["language_instruction"]
+        B = (
+            len(lang_val)
+            if isinstance(lang_val, (list, tuple))
+            else next(iter(lang_val.values())).shape[0]
+            if isinstance(lang_val, dict)
+            else np.asarray(lang_val).shape[0]
+        )
+        for k, v in example_batch.get("task", {}).items():
+            if k not in task_batch and k not in ("pad_mask_dict", "language_instruction"):
+                v_arr = np.asarray(v)
+                task_batch[k] = np.zeros((B, *v_arr.shape[1:]), dtype=v_arr.dtype)
+        if "pad_mask_dict" not in task_batch and "pad_mask_dict" in example_batch.get("task", {}):
+            example_pm = example_batch["task"]["pad_mask_dict"]
+            task_batch["pad_mask_dict"] = {
+                k: np.ones(B, dtype=bool) if k == "language_instruction" else np.zeros(B, dtype=bool)
+                for k in example_pm
+            }
+    conformed_batch["task"] = task_batch
+
     result = {}
     for family in ("observation", "task"):
         expected = example_batch[family]
-        missing = set(expected) - set(batch[family])
+        missing = set(expected) - set(conformed_batch[family])
         if missing:
             raise ValueError(f"batch lacks checkpoint-required {family} keys: {sorted(missing)}")
-        result[family] = {key: batch[family][key] for key in expected}
-        for key, value in result[family].items():
+        result[family] = {}
+        for key in expected:
+            value = conformed_batch[family][key]
+            if key == "pad_mask_dict" and isinstance(value, dict):
+                result[family][key] = {
+                    k: np.asarray(value[k]) for k in expected[key]
+                }
+                continue
+            if key == "language_instruction" and isinstance(value, dict) and isinstance(expected[key], dict):
+                result[family][key] = {
+                    sub_k: np.asarray(value[sub_k]) for sub_k in expected[key]
+                }
+                continue
+            if key == "image_wrist" and hasattr(value, "shape"):
+                expected_shape = np.asarray(expected[key]).shape
+                if value.shape[-3:-1] != expected_shape[-3:-1]:
+                    target_hw = (expected_shape[-3], expected_shape[-2])
+                    flat = value.reshape(-1, *value.shape[-3:])
+                    value = _resize_rgb(flat, target_hw).reshape(*value.shape[:-3], *target_hw, value.shape[-1])
             actual_shape = np.asarray(value).shape
             expected_shape = np.asarray(expected[key]).shape
             if actual_shape[1:] != expected_shape[1:]:
                 raise ValueError(
                     f"{family}/{key} shape {actual_shape[1:]} differs from checkpoint {expected_shape[1:]}"
                 )
+            result[family][key] = value
     for name in ("action", "action_pad_mask"):
         value = np.asarray(batch[name])
         if name == "action" and value.shape[1:] != np.asarray(example_batch["action"]).shape[1:]:

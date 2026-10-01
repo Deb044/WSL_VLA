@@ -153,6 +153,7 @@ def install_octo_modality_patch(*, rank: int, alpha: float):
             )(input_tokens, attention_mask, component_ids, train=train)
             return self.split_output_tokens(output, prefix_groups, timestep_groups)
 
+    ResearchBlockTransformer.__name__ = "BlockTransformer"
     octo_module.BlockTransformer = ResearchBlockTransformer
     return ResearchBlockTransformer
 

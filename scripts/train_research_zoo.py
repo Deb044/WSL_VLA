@@ -187,8 +187,10 @@ def main() -> int:
         raise ValueError("evidence identity does not match requested population run")
 
     data_root = Path(args.data_root or config["data"]["root"])
-    task_files = load_suite_manifest(data_root / args.suite, tasks["suites"][args.suite])
+    task_files = load_suite_manifest(data_root / args.suite, tasks["suites"][args.suite], allow_missing=True)
     data_file = task_files[args.task_index]
+    if data_file is None:
+        raise FileNotFoundError(f"data file for task {args.task_index} is not downloaded in {data_root / args.suite}")
     if evidence.raw_feature_references.get("dataset_sha256") != sha256_file(data_file):
         raise ValueError("evidence was not extracted from the locked task dataset")
     dataset = StrictLiberoHDF5(

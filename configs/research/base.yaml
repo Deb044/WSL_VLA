@@ -32,7 +32,7 @@ data:
   split_seed: 20260929
   episode_split: [0.70, 0.15, 0.15]
   require_wrist_camera: true
-  proprio_keys: [robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos]
+  proprio_keys: [ee_pos, ee_ori, gripper_states]
 
 population:
   seeds: [17, 42, 73]

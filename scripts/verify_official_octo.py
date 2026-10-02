@@ -27,7 +27,19 @@ def main() -> int:
     parser.add_argument(
         "--output", default="research_results/preflight/octo_equivalence.json"
     )
+    parser.add_argument(
+        "--matmul-precision",
+        default="highest",
+        choices=("highest", "default"),
+        help="Equivalence is a correctness check, so it runs in true float32. "
+        "GPUs otherwise use TF32 for float32 matmuls, and the patched graph "
+        "fuses differently, giving ~1e-3 rounding differences.",
+    )
     args = parser.parse_args()
+
+    import jax
+
+    jax.config.update("jax_default_matmul_precision", args.matmul_precision)
 
     bundle = load_research_octo(
         args.checkpoint,
@@ -42,6 +54,8 @@ def main() -> int:
     report = {
         "ok": True,
         "octo_git_revision": OCTO_GIT_REVISION,
+        "matmul_precision": args.matmul_precision,
+        "jax_devices": [str(device) for device in jax.devices()],
         "base_sha256": bundle.base_sha256,
         "base_revision": bundle.base_revision,
         "adapter_parameter_count": len(paths),

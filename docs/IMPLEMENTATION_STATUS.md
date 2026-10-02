@@ -33,6 +33,9 @@ official WSL/CUDA experiment has already been executed.
 | Final research numbers and figures | Not yet produced | Requires collaborator compute |
 | Large-VLA confirmation | Explicitly deferred | Cluster phase after Octo-Small |
 
+Open design and feasibility concerns are tracked in
+`docs/IMPLEMENTATION_REVIEW_2026-10-02.md`.
+
 The Windows suite verifies schemas, metrics, leakage checks, and state
 semantics. Publication claims begin only after official WSL preflight,
 zero-equivalence, simulator gates, and rollout experiments succeed.

@@ -105,6 +105,33 @@ def capture_environment_lock() -> dict[str, Any]:
     }
 
 
+def _editable_checkout_commit(distribution_name: str, url: str) -> str:
+    """Return HEAD of an editable git checkout whose tracked files are unmodified."""
+
+    from urllib.parse import unquote, urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme != "file":
+        raise RuntimeError(f"{distribution_name} editable install is not a local checkout")
+    checkout = unquote(parsed.path)
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", checkout, "rev-parse", "HEAD"], text=True, timeout=30
+        ).strip()
+        modified = subprocess.check_output(
+            ["git", "-C", checkout, "status", "--porcelain", "--untracked-files=no"],
+            text=True,
+            timeout=30,
+        ).strip()
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"{distribution_name} editable install is not a readable git checkout"
+        ) from exc
+    if modified:
+        raise RuntimeError(f"{distribution_name} editable checkout has modified tracked files")
+    return commit
+
+
 def installed_vcs_commit(distribution_name: str) -> str:
     """Read the immutable commit recorded by a PEP 610 VCS installation."""
 
@@ -119,7 +146,14 @@ def installed_vcs_commit(distribution_name: str) -> str:
         )
     try:
         payload = json.loads(direct_url)
-        commit = payload["vcs_info"]["commit_id"]
+        if "vcs_info" in payload:
+            commit = payload["vcs_info"]["commit_id"]
+        elif payload["dir_info"]["editable"] is True:
+            # LIBERO only imports from an editable checkout; pip then records
+            # the directory rather than the commit, so read the clean checkout.
+            commit = _editable_checkout_commit(distribution_name, payload["url"])
+        else:
+            raise KeyError("vcs_info")
     except (KeyError, TypeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"{distribution_name} has invalid direct_url.json") from exc
     if not isinstance(commit, str) or len(commit) != 40:

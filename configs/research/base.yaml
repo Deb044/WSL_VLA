@@ -4,7 +4,8 @@ run_tier: development
 model:
   id: rail-berkeley/octo-small-1.5
   revision: dc9aa3019f764726c770814b27e4ab0fc6e32a58
-  octo_git_revision: 241fb3514b7c40957a86d869fecb7c7fc353f540
+  # Patched JAX 0.7 port of upstream 241fb3514b7c40957a86d869fecb7c7fc353f540.
+  octo_git_revision: a4cc964b7e77f8d8b19f533a0dfa95d653501ab7
   require_sha256: true
   precision: float32
 

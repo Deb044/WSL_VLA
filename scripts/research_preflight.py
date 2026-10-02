@@ -34,11 +34,14 @@ from wsl_vla.experiments.provenance import (
     sha256_file,
 )
 from wsl_vla.experiments.gamma_selection import validate_gamma_candidate_config
-from wsl_vla.octo.bridge import OCTO_GIT_REVISION
+from wsl_vla.octo.bridge import OCTO_GIT_REVISION, OCTO_UPSTREAM_REVISION
 
 
 RESEARCH_MODULES = ("jax", "flax", "optax", "octo", "libero", "h5py", "yaml")
-RESEARCH_DISTRIBUTIONS = ("jax", "flax", "optax", "octo", "libero", "h5py", "PyYAML")
+RESEARCH_DISTRIBUTIONS = (
+    "jax", "jaxlib", "flax", "optax", "orbax-checkpoint", "octo", "libero",
+    "tensorflow", "transformers", "robosuite", "mujoco", "h5py", "PyYAML",
+)
 
 
 def main() -> int:
@@ -69,8 +72,8 @@ def main() -> int:
     folds = publication_folds()
 
     problems: list[str] = []
-    if sys.version_info[:2] not in {(3, 10), (3, 11)}:
-        problems.append(f"Python {platform.python_version()} is unsupported; use 3.10 or 3.11")
+    if sys.version_info[:2] != (3, 11):
+        problems.append(f"Python {platform.python_version()} is unsupported; use 3.11")
     if platform.system() != "Linux":
         problems.append(f"host is {platform.system()}, not Linux/WSL2")
     missing = [name for name in RESEARCH_MODULES if importlib.util.find_spec(name) is None]
@@ -89,6 +92,19 @@ def main() -> int:
             )
         except RuntimeError as exc:
             problems.append(str(exc))
+    accelerator = None
+    if "jax" not in missing:
+        import jax
+
+        accelerator = {
+            "backend": jax.default_backend(),
+            "devices": [str(device) for device in jax.devices()],
+        }
+        if accelerator["backend"] != "gpu":
+            problems.append(
+                f"JAX backend is {accelerator['backend']}, not gpu; Blackwell needs the "
+                "CUDA 12.8+ jax build installed by scripts/setup_research_env.sh"
+            )
     if os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE", "").lower() not in {"false", "0"}:
         problems.append("set XLA_PYTHON_CLIENT_PREALLOCATE=false for the <=8 GB profile")
 
@@ -147,6 +163,12 @@ def main() -> int:
         "ok": not problems,
         "problems": problems,
         "octo_git_revision": OCTO_GIT_REVISION,
+        "octo_upstream_revision": OCTO_UPSTREAM_REVISION,
+        "octo_patches": {
+            path.name: sha256_file(path)
+            for path in sorted(Path("third_party/octo").glob("*.patch"))
+        },
+        "accelerator": accelerator,
         "libero_git_revision": LIBERO_GIT_REVISION,
         "installed_vcs_revisions": installed_revisions,
         "expected_population_checkpoints": len(population),

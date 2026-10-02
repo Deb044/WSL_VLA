@@ -11,7 +11,10 @@ import numpy as np
 from ..experiments.provenance import sha256_array_tree
 
 
-OCTO_GIT_REVISION = "241fb3514b7c40957a86d869fecb7c7fc353f540"
+# Upstream Octo plus third_party/octo/*.patch (JAX 0.7 port), rebuilt as a
+# deterministic commit by scripts/build_patched_octo.sh.
+OCTO_UPSTREAM_REVISION = "241fb3514b7c40957a86d869fecb7c7fc353f540"
+OCTO_GIT_REVISION = "a4cc964b7e77f8d8b19f533a0dfa95d653501ab7"
 OCTO_MODEL_ID = "rail-berkeley/octo-small-1.5"
 OCTO_MODEL_REVISION = "dc9aa3019f764726c770814b27e4ab0fc6e32a58"
 
@@ -29,7 +32,7 @@ def _research_imports():
     except ImportError as exc:
         raise RuntimeError(
             "Official Octo integration requires the pinned Linux/WSL2 research environment. "
-            "Install requirements-research.txt under Python 3.10 or 3.11."
+            "Run scripts/setup_research_env.sh under Python 3.11."
         ) from exc
     return nn, jax, jnp, octo_module, BlockTransformer, Encoder1DBlock, OctoModel, merge_params
 

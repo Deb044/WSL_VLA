@@ -27,7 +27,7 @@ else:
 def require_jax() -> None:
     if _IMPORT_ERROR is not None:
         raise RuntimeError(
-            "The official research path requires Python 3.10/3.11 with the "
+            "The official research path requires Python 3.11 with the "
             "'research' extra installed under Linux/WSL2."
         ) from _IMPORT_ERROR
 

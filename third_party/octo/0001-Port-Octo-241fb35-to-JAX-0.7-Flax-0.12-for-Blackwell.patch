@@ -1,0 +1,323 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WSL-VLA Blackwell Port <wsl-vla-port@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Port Octo 241fb35 to JAX 0.7 / Flax 0.12 for Blackwell GPUs
+
+- Replace removed jax.tree_map/jax.tree_leaves with jax.tree.map/leaves.
+- Replace removed jax.random.KeyArray with jax.Array.
+- Use process_allgather(..., tiled=True): newer JAX stacks a process axis
+  for tiled=False even on one host, corrupting example-batch shapes.
+- Drop distrax (incompatible with new JAX) from the discrete action head;
+  jax.random.categorical samples the same distribution.
+---
+ octo/model/components/action_heads.py | 11 ++++++-----
+ octo/model/octo_model.py              | 18 ++++++++++--------
+ octo/model/octo_module.py             |  2 +-
+ octo/utils/gym_wrappers.py            |  2 +-
+ octo/utils/jax_utils.py               |  8 ++++----
+ octo/utils/train_callbacks.py         | 12 ++++++------
+ octo/utils/train_utils.py             | 12 ++++++------
+ octo/utils/typing.py                  |  2 +-
+ octo/utils/visualization_lib.py       |  6 +++---
+ 9 files changed, 38 insertions(+), 35 deletions(-)
+
+diff --git a/octo/model/components/action_heads.py b/octo/model/components/action_heads.py
+index b56db26..7978dbe 100644
+--- a/octo/model/components/action_heads.py
++++ b/octo/model/components/action_heads.py
+@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
+ import logging
+ from typing import Dict, Optional, Tuple
+ 
+-import distrax
+ from einops import rearrange
+ import flax.linen as nn
+ import jax
+@@ -360,10 +359,12 @@ class DiscreteActionHead(nn.Module, ActionHead):
+                 action_tokens, sample_shape + action_tokens.shape
+             )
+         else:
+-            dist = distrax.Categorical(logits=action_logits / temperature)
+-            action_tokens = dist.sample(seed=rng, sample_shape=sample_shape).astype(
+-                jnp.int32
+-            )
++            # distrax was dropped for JAX>=0.7 compatibility; same distribution.
++            action_tokens = jax.random.categorical(
++                rng,
++                action_logits / temperature,
++                shape=tuple(sample_shape) + action_logits.shape[:-1],
++            ).astype(jnp.int32)
+         return self.action_tokenizer.decode(action_tokens)
+ 
+ 
+diff --git a/octo/model/octo_model.py b/octo/model/octo_model.py
+index 23cc497..ab6a065 100644
+--- a/octo/model/octo_model.py
++++ b/octo/model/octo_model.py
+@@ -116,7 +116,7 @@ class OctoModel:
+                 len(texts), dtype=bool
+             )
+         else:
+-            batch_size = jax.tree_leaves(goals)[0].shape[0]
++            batch_size = jax.tree.leaves(goals)[0].shape[0]
+             tasks["language_instruction"] = [""] * batch_size
+             tasks["pad_mask_dict"]["language_instruction"] = np.zeros(
+                 batch_size, dtype=bool
+@@ -296,12 +296,12 @@ class OctoModel:
+         logging.debug(
+             "Model was trained with observations: %s",
+             flax.core.pretty_repr(
+-                jax.tree_map(jnp.shape, example_batch["observation"])
++                jax.tree.map(jnp.shape, example_batch["observation"])
+             ),
+         )
+         logging.debug(
+             "Model was trained with tasks: %s",
+-            flax.core.pretty_repr(jax.tree_map(jnp.shape, example_batch["task"])),
++            flax.core.pretty_repr(jax.tree.map(jnp.shape, example_batch["task"])),
+         )
+ 
+         # load dataset statistics
+@@ -309,7 +309,7 @@ class OctoModel:
+             tf.io.gfile.join(checkpoint_path, "dataset_statistics.json"), "r"
+         ) as f:
+             dataset_statistics = json.load(f)
+-            dataset_statistics = jax.tree_map(
++            dataset_statistics = jax.tree.map(
+                 np.array, dataset_statistics, is_leaf=lambda x: not isinstance(x, dict)
+             )
+ 
+@@ -408,7 +408,7 @@ class OctoModel:
+             if not tf.io.gfile.exists(dataset_statistics_path):
+                 with tf.io.gfile.GFile(dataset_statistics_path, "w") as f:
+                     json.dump(
+-                        jax.tree_map(lambda x: x.tolist(), self.dataset_statistics),
++                        jax.tree.map(lambda x: x.tolist(), self.dataset_statistics),
+                         f,
+                     )
+ 
+@@ -435,8 +435,10 @@ class OctoModel:
+         """
+         module = OctoModule.create(**config["model"])
+         rng = rng if rng is not None else jax.random.PRNGKey(0)
+-        example_batch = multihost_utils.process_allgather(example_batch)
+-        example_batch = jax.tree_map(lambda x: x[:1], example_batch)
++        # tiled=True: newer JAX stacks a process axis when tiled=False, even on
++        # one host, which corrupts every batch dimension below.
++        example_batch = multihost_utils.process_allgather(example_batch, tiled=True)
++        example_batch = jax.tree.map(lambda x: x[:1], example_batch)
+ 
+         init_args = (
+             example_batch["observation"],
+@@ -480,7 +482,7 @@ class OctoModel:
+             if k.startswith("image")
+         }
+         if self.text_processor is not None:
+-            task_space["language_instruction"] = jax.tree_map(
++            task_space["language_instruction"] = jax.tree.map(
+                 lambda arr: ("batch", *arr.shape[1:]),
+                 self.example_batch["task"]["language_instruction"],
+             )
+diff --git a/octo/model/octo_module.py b/octo/model/octo_module.py
+index c14343a..3b8bd7a 100644
+--- a/octo/model/octo_module.py
++++ b/octo/model/octo_module.py
+@@ -128,7 +128,7 @@ class OctoTransformer(nn.Module):
+         batch_size, horizon = jax.tree_util.tree_leaves(observations)[0].shape[:2]
+         assert horizon <= self.max_horizon, "horizon must be <= max_horizon"
+         assert jax.tree_util.tree_all(
+-            jax.tree_map(lambda x: x.shape[1] == horizon, observations)
++            jax.tree.map(lambda x: x.shape[1] == horizon, observations)
+         ), "observations must have the same horizon"
+ 
+         #
+diff --git a/octo/utils/gym_wrappers.py b/octo/utils/gym_wrappers.py
+index 8999806..0ee1b5f 100644
+--- a/octo/utils/gym_wrappers.py
++++ b/octo/utils/gym_wrappers.py
+@@ -281,7 +281,7 @@ class NormalizeProprio(gym.ObservationWrapper):
+         env: gym.Env,
+         action_proprio_metadata: dict,
+     ):
+-        self.action_proprio_metadata = jax.tree_map(
++        self.action_proprio_metadata = jax.tree.map(
+             lambda x: np.array(x),
+             action_proprio_metadata,
+             is_leaf=lambda x: isinstance(x, list),
+diff --git a/octo/utils/jax_utils.py b/octo/utils/jax_utils.py
+index 8909b4a..5ba9434 100644
+--- a/octo/utils/jax_utils.py
++++ b/octo/utils/jax_utils.py
+@@ -27,8 +27,8 @@ def shard_along_axis(x: Any, devices: Sequence[jax.Device], axis: int = 0) -> ja
+         jax.sharding.Mesh(devices, "x"),
+         jax.sharding.PartitionSpec(*([None] * axis + ["x"])),
+     )
+-    x = jax.tree_map(jnp.array, x)
+-    return jax.tree_map(
++    x = jax.tree.map(jnp.array, x)
++    return jax.tree.map(
+         lambda arr: jax.make_array_from_callback(
+             arr.shape, sharding, lambda index: arr[index]
+         ),
+@@ -61,8 +61,8 @@ def replicate(x: Any, devices: Optional[Sequence[jax.Device]] = None) -> jax.Arr
+     if devices is None:
+         devices = jax.devices()
+     sharding = jax.sharding.PositionalSharding(devices).replicate()
+-    x = jax.tree_map(jnp.array, x)
+-    return jax.tree_map(
++    x = jax.tree.map(jnp.array, x)
++    return jax.tree.map(
+         lambda arr: jax.make_array_from_callback(
+             arr.shape, sharding, lambda index: arr[index]
+         ),
+diff --git a/octo/utils/train_callbacks.py b/octo/utils/train_callbacks.py
+index a406162..beed440 100644
+--- a/octo/utils/train_callbacks.py
++++ b/octo/utils/train_callbacks.py
+@@ -98,12 +98,12 @@ class SaveCallback(Callback):
+ def remove_text(tasks: Data, zero_text_encoding: Optional[Data]):
+     """Replaces language encoding inside task dict with that of the empty string.
+ 
+-    zero_text_encoding = jax.tree_map(lambda x: x[0], text_processor.encode([""]))
++    zero_text_encoding = jax.tree.map(lambda x: x[0], text_processor.encode([""]))
+     """
+     if zero_text_encoding is None:
+         zero_text_encoding = jnp.zeros((1,))
+     if "language_instruction" in tasks:
+-        new_language = jax.tree_map(
++        new_language = jax.tree.map(
+             lambda x, example: jnp.broadcast_to(example[None], x.shape),
+             tasks["language_instruction"],
+             zero_text_encoding,
+@@ -191,7 +191,7 @@ class ValidationCallback(Callback):
+ 
+     def __post_init__(self):
+         if self.text_processor is not None:
+-            self.zero_text = jax.tree_map(
++            self.zero_text = jax.tree.map(
+                 lambda x: x[0], self.text_processor.encode("")
+             )
+         else:
+@@ -257,7 +257,7 @@ class ValidationCallback(Callback):
+                 desc=name,
+             ):
+                 metrics.append(self.eval_step(train_state, batch))
+-            metrics = jax.tree_map(lambda *xs: np.mean(xs), *metrics)
++            metrics = jax.tree.map(lambda *xs: np.mean(xs), *metrics)
+             wandb_metrics[f"validation_{name}"] = metrics
+         return wandb_metrics
+ 
+@@ -276,7 +276,7 @@ class VisualizationCallback(Callback):
+ 
+     def __post_init__(self):
+         if self.text_processor is not None:
+-            self.zero_text = jax.tree_map(
++            self.zero_text = jax.tree.map(
+                 lambda x: x[0], self.text_processor.encode("")
+             )
+         else:
+@@ -338,7 +338,7 @@ class RolloutVisualizationCallback(Callback):
+ 
+     def __post_init__(self):
+         if self.text_processor is not None:
+-            self.zero_text = jax.tree_map(
++            self.zero_text = jax.tree.map(
+                 lambda x: x[0], self.text_processor.encode("")
+             )
+         else:
+diff --git a/octo/utils/train_utils.py b/octo/utils/train_utils.py
+index dca7e95..36cd4ef 100644
+--- a/octo/utils/train_utils.py
++++ b/octo/utils/train_utils.py
+@@ -147,7 +147,7 @@ def batched_apply(fn, batch_size):
+         outputs = []
+         for i in range(0, input_batch_size, batch_size):
+             step_batch_size = min(batch_size, input_batch_size - i)
+-            step_args, step_kwargs = jax.tree_map(
++            step_args, step_kwargs = jax.tree.map(
+                 lambda arr: pad_to_size(arr[i : i + batch_size], batch_size),
+                 (args, kwargs),
+             )
+@@ -157,12 +157,12 @@ def batched_apply(fn, batch_size):
+             step_output = fn(*step_args, **step_kwargs)
+             step_output = jax.device_get(jax_utils.split_along_axis(step_output))
+             outputs.append(
+-                jax.tree_map(
++                jax.tree.map(
+                     lambda arr: arr[:step_batch_size],
+                     step_output,
+                 )
+             )
+-        return jax.tree_map(lambda *args: np.concatenate(args, axis=0), *outputs)
++        return jax.tree.map(lambda *args: np.concatenate(args, axis=0), *outputs)
+ 
+     return wrapped_fn
+ 
+@@ -271,12 +271,12 @@ def freeze_weights(
+     )
+     total_params = sum(
+         jax.tree_util.tree_leaves(
+-            jax.tree_map(lambda x: x.size, params_or_params_shape)
++            jax.tree.map(lambda x: x.size, params_or_params_shape)
+         )
+     )
+     trainable_params = sum(
+         jax.tree_util.tree_leaves(
+-            jax.tree_map(
++            jax.tree.map(
+                 lambda x, y: x.size if y == "trainable" else 0,
+                 params_or_params_shape,
+                 param_partitions,
+@@ -333,7 +333,7 @@ def create_optimizer(
+         tx, param_partitions = freeze_weights(
+             tx, params_or_params_shape, frozen_keys, return_partitions=True
+         )
+-        zero_frozen_params = lambda params: jax.tree_map(
++        zero_frozen_params = lambda params: jax.tree.map(
+             lambda x, y: x if y == "trainable" else jnp.zeros(()),
+             params,
+             param_partitions,
+diff --git a/octo/utils/typing.py b/octo/utils/typing.py
+index 2f38ae7..ac3dc44 100644
+--- a/octo/utils/typing.py
++++ b/octo/utils/typing.py
+@@ -2,7 +2,7 @@ from typing import Any, Mapping, Sequence, Union
+ 
+ import jax
+ 
+-PRNGKey = jax.random.KeyArray
++PRNGKey = jax.Array
+ PyTree = Union[jax.typing.ArrayLike, Mapping[str, "PyTree"]]
+ Config = Union[Any, Mapping[str, "Config"]]
+ Params = Mapping[str, PyTree]
+diff --git a/octo/utils/visualization_lib.py b/octo/utils/visualization_lib.py
+index 6671be4..f3e8e46 100644
+--- a/octo/utils/visualization_lib.py
++++ b/octo/utils/visualization_lib.py
+@@ -85,7 +85,7 @@ def run_policy_on_trajectory(policy_fn, traj, *, text_processor=None):
+ 
+     tasks = {}
+     tasks.update(
+-        jax.tree_map(
++        jax.tree.map(
+             lambda arr: np.tile(arr[-1][-1], (len_traj, *([1] * (arr.ndim - 2)))),
+             traj["observation"],
+         )
+@@ -329,7 +329,7 @@ class RolloutVisualizer:
+             while len(images) < self.max_episode_length:
+                 # policy outputs are shape [batch, n_samples, pred_horizon, act_dim]
+                 # we remove batch dimension & use first sampled action, ignoring other samples
+-                actions = policy_fn(jax.tree_map(lambda x: x[None], obs), task)
++                actions = policy_fn(jax.tree.map(lambda x: x[None], obs), task)
+                 actions = np.array(actions[0, 0])
+                 obs, reward, done, trunc, info = self._env.step(actions)
+                 if "observations" in info:
+@@ -349,7 +349,7 @@ class RolloutVisualizer:
+                 # concatenate all chunks into one dict of lists, then average across episode
+                 metrics = listdict2dictlist(metrics)
+                 rollout_info["episode_metrics"].append(
+-                    jax.tree_map(lambda x: np.mean(x), metrics)
++                    jax.tree.map(lambda x: np.mean(x), metrics)
+                 )
+             if hasattr(self._env, "get_episode_metrics"):
+                 if metrics:

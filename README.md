@@ -33,19 +33,21 @@ Octo-Small results.
 
 ## Research environment
 
-The official path targets Ubuntu/WSL2, Python 3.10 or 3.11, CUDA, and an NVIDIA
-GPU with at least 8 GB memory. Octo is pinned to commit
-`241fb3514b7c40957a86d869fecb7c7fc353f540`; the model configuration pins
+The official path targets Linux, Python 3.11, and an NVIDIA GPU with CUDA
+12.8+ support, including Blackwell (sm_120). It uses JAX 0.7.1 and Flax 0.12.
+Upstream Octo `241fb3514b7c40957a86d869fecb7c7fc353f540` does not run on that
+JAX, so `third_party/octo/*.patch` ports it. `scripts/build_patched_octo.sh`
+rebuilds the patch as the deterministic commit
+`a4cc964b7e77f8d8b19f533a0dfa95d653501ab7`. The model configuration pins
 `rail-berkeley/octo-small-1.5` and records the resolved checkpoint hash in every
 run. LIBERO is pinned to commit
-`8f1084e3132a39270c3a13ebe37270a43ece2a01`, and preflight verifies both VCS
-identities from their installed package metadata.
+`8f1084e3132a39270c3a13ebe37270a43ece2a01`. Preflight verifies both revisions
+from their installed package metadata, and checks that JAX sees a GPU.
 
 ```bash
-export XLA_PYTHON_CLIENT_PREALLOCATE=false
-python3.10 -m venv .venv-research
+PYTHON=python3.11 scripts/setup_research_env.sh .venv-research
 source .venv-research/bin/activate
-pip install -r requirements-research.txt
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
 python scripts/research_preflight.py
 python scripts/verify_official_octo.py
 pytest -m "not integration"

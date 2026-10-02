@@ -5,14 +5,17 @@ The old PyTorch scripts are smoke fixtures and are not publication-eligible.
 
 ## 1. Environment and immutable inputs
 
-Use Linux/WSL2, Python 3.10 or 3.11, CUDA JAX, and the pinned Octo and LIBERO
-revisions. Freeze a clean Git commit before publication jobs.
+Use Linux, Python 3.11, a CUDA 12.8+ capable GPU (Blackwell included), and
+the pinned Octo port and LIBERO revisions. Install only through
+`scripts/setup_research_env.sh`, which performs the ordered `--no-deps` steps
+for dlimp, the patched Octo commit, and the editable LIBERO checkout. Freeze a
+clean Git commit before publication jobs. Every condition in a comparison must
+come from the same environment lock.
 
 ```bash
 git checkout <frozen-study-commit>
-python3.10 -m venv .venv-research
+PYTHON=python3.11 scripts/setup_research_env.sh .venv-research
 source .venv-research/bin/activate
-pip install -r requirements-research.txt
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export M1_ROOT="$PWD/research_results"
 export M1_DEV="$M1_ROOT/development"

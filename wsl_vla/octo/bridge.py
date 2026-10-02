@@ -17,6 +17,7 @@ OCTO_UPSTREAM_REVISION = "241fb3514b7c40957a86d869fecb7c7fc353f540"
 OCTO_GIT_REVISION = "a4cc964b7e77f8d8b19f533a0dfa95d653501ab7"
 OCTO_MODEL_ID = "rail-berkeley/octo-small-1.5"
 OCTO_MODEL_REVISION = "dc9aa3019f764726c770814b27e4ab0fc6e32a58"
+EQUIVALENCE_MATMUL_PRECISION = "highest"
 
 
 def _research_imports():
@@ -213,15 +214,17 @@ def load_research_octo(
     reference_timestep_mask = reference_observations["timestep_pad_mask"]
     # Materialize the true official output before changing Octo's module global.
     # ``device_get`` also closes the door on asynchronous dispatch observing the
-    # later monkeypatch.
-    reference_transformer_outputs = jax.device_get(
-        pretrained.run_transformer(
-            reference_observations,
-            reference_tasks,
-            reference_timestep_mask,
-            train=False,
+    # later monkeypatch. True float32: GPUs otherwise use TF32 for float32
+    # matmuls, which is too coarse for the equivalence check.
+    with jax.default_matmul_precision(EQUIVALENCE_MATMUL_PRECISION):
+        reference_transformer_outputs = jax.device_get(
+            pretrained.run_transformer(
+                reference_observations,
+                reference_tasks,
+                reference_timestep_mask,
+                train=False,
+            )
         )
-    )
 
     install_octo_modality_patch(rank=rank, alpha=alpha)
     research = OctoModel.from_config(
@@ -255,8 +258,17 @@ def load_research_octo(
     )
 
 
-def assert_zero_adapter_equivalence(bundle: ResearchOctoBundle, *, atol: float = 1e-6) -> None:
-    """Verify that adding zero adapters leaves every transformer output unchanged."""
+def assert_zero_adapter_equivalence(
+    bundle: ResearchOctoBundle, *, atol: float = 1e-5, rtol: float = 1e-5
+) -> dict[str, float]:
+    """Verify that adding zero adapters leaves every transformer output unchanged.
+
+    Both graphs run in true float32. They still fuse into different kernels, so
+    float32 summation order differs; on GPU that leaves a few-ulp residue
+    (~3e-6 measured on Blackwell). A functional error is orders of magnitude
+    larger, so the tolerance is relative to output magnitude. Returns the
+    measured worst-case difference for the run report.
+    """
 
     _, jax, jnp, _, _, _, _, _ = _research_imports()
     from ..adapters.flax import apply_external_adapters
@@ -268,40 +280,57 @@ def assert_zero_adapter_equivalence(bundle: ResearchOctoBundle, *, atol: float =
     # patched. Re-running the pretrained module here would no longer be a valid
     # unmodified reference.
     original = bundle.reference_transformer_outputs
-    parameters = apply_external_adapters(
-        bundle.research_model.params,
-        bundle.diffusion_factors,
-        alpha=bundle.adapter_alpha,
-    )
-    patched_model = bundle.research_model.replace(params=parameters)
-    patched = patched_model.run_transformer(observations, tasks, timestep_mask, train=False)
-    original_head = bundle.pretrained_model.module.bind(
-        {"params": bundle.pretrained_model.params}
-    ).heads["action"]
-    patched_head = patched_model.module.bind({"params": parameters}).heads["action"]
-    time = jnp.zeros((*timestep_mask.shape, 1), dtype=jnp.float32)
-    noisy_actions = jnp.zeros(
-        (*timestep_mask.shape, original_head.action_horizon * original_head.action_dim),
-        dtype=jnp.float32,
-    )
-    original_prediction = original_head(
-        original, time=time, noisy_actions=noisy_actions, train=False
-    )
-    patched_prediction = patched_head(
-        patched, time=time, noisy_actions=noisy_actions, train=False
-    )
+    with jax.default_matmul_precision(EQUIVALENCE_MATMUL_PRECISION):
+        parameters = apply_external_adapters(
+            bundle.research_model.params,
+            bundle.diffusion_factors,
+            alpha=bundle.adapter_alpha,
+        )
+        patched_model = bundle.research_model.replace(params=parameters)
+        patched = patched_model.run_transformer(
+            observations, tasks, timestep_mask, train=False
+        )
+        original_head = bundle.pretrained_model.module.bind(
+            {"params": bundle.pretrained_model.params}
+        ).heads["action"]
+        patched_head = patched_model.module.bind({"params": parameters}).heads["action"]
+        time = jnp.zeros((*timestep_mask.shape, 1), dtype=jnp.float32)
+        noisy_actions = jnp.zeros(
+            (*timestep_mask.shape, original_head.action_horizon * original_head.action_dim),
+            dtype=jnp.float32,
+        )
+        original_prediction = original_head(
+            original, time=time, noisy_actions=noisy_actions, train=False
+        )
+        patched_prediction = patched_head(
+            patched, time=time, noisy_actions=noisy_actions, train=False
+        )
     original_leaves = jax.tree_util.tree_leaves((original, original_prediction))
     patched_leaves = jax.tree_util.tree_leaves((patched, patched_prediction))
     if len(original_leaves) != len(patched_leaves):
         raise AssertionError("patched Octo output tree differs from the official model")
+    worst = {"max_abs_diff": 0.0, "max_reference_abs": 0.0}
     for index, (left, right) in enumerate(zip(original_leaves, patched_leaves)):
-        if np.asarray(left).dtype.kind not in "biufc":
+        left, right = np.asarray(left), np.asarray(right)
+        if left.dtype.kind not in "biufc":
             continue
-        if not np.allclose(np.asarray(left), np.asarray(right), atol=atol, rtol=0):
-            difference = float(np.max(np.abs(np.asarray(left) - np.asarray(right))))
+        if left.shape != right.shape:
+            raise AssertionError(f"zero-adapter output leaf {index} changed shape")
+        if left.size == 0:
+            continue
+        if left.dtype.kind in "biu":
+            if not np.array_equal(left, right):
+                raise AssertionError(f"zero-adapter equivalence failed at mask leaf {index}")
+            continue
+        difference = float(np.max(np.abs(left - right)))
+        worst["max_abs_diff"] = max(worst["max_abs_diff"], difference)
+        worst["max_reference_abs"] = max(worst["max_reference_abs"], float(np.max(np.abs(left))))
+        if not np.allclose(left, right, atol=atol, rtol=rtol):
             raise AssertionError(
-                f"zero-adapter equivalence failed at output leaf {index}; max abs diff={difference}"
+                f"zero-adapter equivalence failed at output leaf {index}; "
+                f"max abs diff={difference}, max |reference|={float(np.max(np.abs(left)))}"
             )
+    return worst
 
 
 def adapter_parameter_paths(params: Any) -> tuple[tuple[str, ...], ...]:

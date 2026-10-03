@@ -261,12 +261,22 @@ def build_octo_observation(
         "image_primary": "agentview_image",
         "image_wrist": "robot0_eye_in_hand_image",
     }
+    pad_mask = np.zeros((1, window), dtype=bool)
+    pad_mask[0, start:] = True
     for key, expected_value in example_observation.items():
+        # Filled exactly as conform_batch_to_octo_example fills training batches.
+        if key == "pad_mask_dict":
+            result[key] = {name: pad_mask.copy() for name in expected_value}
+            continue
         expected = np.asarray(expected_value)
         if key == "timestep_pad_mask":
-            value = np.zeros((1, window), dtype=bool)
-            value[0, start:] = True
-            result[key] = value
+            result[key] = pad_mask.copy()
+            continue
+        if key == "timestep":
+            result[key] = np.arange(window, dtype=expected.dtype)[None]
+            continue
+        if key == "task_completed":
+            result[key] = np.zeros((1, window, *expected.shape[2:]), dtype=bool)
             continue
         if key in raw_image_keys:
             raw_key = raw_image_keys[key]

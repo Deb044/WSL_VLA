@@ -156,6 +156,27 @@ def test_octo_observation_left_pads_and_resizes_all_modalities():
     np.testing.assert_array_equal(result["proprio"][0, -1], np.r_[np.arange(3), np.arange(4), np.arange(2)])
 
 
+def test_octo_observation_fills_octo_small_bookkeeping_keys():
+    example = {
+        "image_primary": np.zeros((1, 2, 8, 8, 3), dtype=np.uint8),
+        "pad_mask_dict": {
+            "image_primary": np.ones((1, 2), dtype=bool),
+            "timestep": np.ones((1, 2), dtype=bool),
+        },
+        "task_completed": np.zeros((1, 2, 4), dtype=bool),
+        "timestep": np.zeros((1, 2), dtype=np.int32),
+        "timestep_pad_mask": np.ones((1, 2), dtype=bool),
+    }
+    history = [{"agentview_image": np.full((4, 4, 3), 5, dtype=np.uint8)}]
+    result = build_octo_observation(history, example)
+    np.testing.assert_array_equal(result["timestep_pad_mask"], [[False, True]])
+    np.testing.assert_array_equal(result["timestep"], [[0, 1]])
+    assert result["timestep"].dtype == np.int32
+    assert result["task_completed"].shape == (1, 2, 4) and not result["task_completed"].any()
+    assert set(result["pad_mask_dict"]) == {"image_primary", "timestep"}
+    np.testing.assert_array_equal(result["pad_mask_dict"]["image_primary"], [[False, True]])
+
+
 def test_octo_observation_rejects_checkpoint_inputs_it_cannot_supply():
     with pytest.raises(ValueError, match="unsupported checkpoint observation key"):
         build_octo_observation(

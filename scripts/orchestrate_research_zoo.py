@@ -111,6 +111,11 @@ def main() -> int:
         help="Do NOT delete raw HDF5 files after suite training (requires > 30 GB disk space)",
     )
     parser.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Use already-downloaded suites and rebuild manifests offline (compute nodes)",
+    )
+    parser.add_argument(
         "--python",
         default=sys.executable,
         help="Python executable to run sub-scripts (default: current interpreter)",
@@ -160,7 +165,12 @@ def main() -> int:
         if args.tasks_per_suite < 10:
             download_cmd.extend(["--max_tasks", str(args.tasks_per_suite)])
 
-        if not run_cmd(download_cmd, f"Download demonstrations for {suite}", env=run_env):
+        if args.skip_download:
+            sys.path.insert(0, str(REPO_ROOT / "scripts"))
+            from download_libero import generate_suite_manifest
+
+            generate_suite_manifest(suite, str(suite_dir))
+        elif not run_cmd(download_cmd, f"Download demonstrations for {suite}", env=run_env):
             log(f"Aborting due to download failure on suite: {suite}")
             return 1
 
@@ -218,6 +228,18 @@ def main() -> int:
                 if len(existing_ckpts) >= 3:
                     log(f"Zoo run {suite}_{task_idx} seed={seed} already trained (found {len(existing_ckpts)} ckpts), skipping.")
                     continue
+                if task_dir.exists():
+                    # A walltime kill leaves step_* dirs that train_research_zoo refuses to overwrite.
+                    # Kept outside output_root, whose verifier counts every adapter.npz.
+                    aside = (
+                        output_root.parent
+                        / f"{output_root.name}_partial"
+                        / task_dir.relative_to(output_root).parent
+                        / f"{task_dir.name}_{time.strftime('%Y%m%d_%H%M%S')}"
+                    )
+                    aside.parent.mkdir(parents=True, exist_ok=True)
+                    log(f"Moving partial zoo run {task_dir} ({len(existing_ckpts)} ckpts) to {aside}.")
+                    task_dir.rename(aside)
 
                 train_cmd = [
                     python_bin,

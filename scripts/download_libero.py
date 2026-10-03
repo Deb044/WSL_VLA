@@ -116,9 +116,16 @@ def generate_suite_manifest(suite_name: str, suite_dir: str, tasks_yaml: str = "
         return
 
     instructions = config["suites"][suite_name]
+    present = sorted(p.name for p in Path(suite_dir).glob("*.hdf5"))
     tasks = []
     for idx, inst in enumerate(instructions):
         slug = re.sub(r"[^a-z0-9]+", "_", inst.lower()).strip("_") + "_demo.hdf5"
+        # libero_10 files carry a scene prefix, e.g. KITCHEN_SCENE3_<slug>.
+        matches = [name for name in present if name == slug or name.endswith("_" + slug)]
+        if len(matches) == 1:
+            slug = matches[0]
+        elif len(matches) > 1:
+            raise ValueError(f"{suite_name} task {idx} matches several files: {matches}")
         tasks.append({
             "task_index": idx,
             "instruction": inst,

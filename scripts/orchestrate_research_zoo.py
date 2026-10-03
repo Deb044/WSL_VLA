@@ -252,6 +252,8 @@ def main() -> int:
                     str(seed),
                     "--evidence",
                     str(evidence_path),
+                    "--data-root",
+                    str(data_root),
                     "--output-root",
                     str(output_root),
                 ]

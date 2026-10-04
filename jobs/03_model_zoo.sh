@@ -41,9 +41,13 @@ echo "suites=[$SUITES] seeds=[$SEEDS] tasks=$TASKS steps=${STEPS:-config} out=$R
 nvidia-smi -L
 df -h $S | tail -1
 
+set +e
 python scripts/orchestrate_research_zoo.py \
   --suites $SUITES --seeds $SEEDS --tasks-per-suite "$TASKS" \
   --data-root "$S/data/libero" --evidence-root "$R/evidence" \
   --output-root "$R/$TAG" --skip-download --keep-raw "${EXTRA[@]}"
-
+STATUS=$?
+set -e
+echo "== orchestrator exit status $STATUS (0 = all runs done, 1 = see FAILED RUNS above)"
 echo "== done at $(date)"
+exit $STATUS

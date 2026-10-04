@@ -143,6 +143,8 @@ def main() -> int:
     log(f"Python interpreter: {python_bin}")
 
     overall_start = time.perf_counter()
+    # One broken task must not stop the rest of the zoo; reruns retry only what is missing.
+    failures: list[str] = []
 
     for suite_idx, suite in enumerate(args.suites, start=1):
         suite_dir = data_root / suite
@@ -191,7 +193,8 @@ def main() -> int:
             hdf5_file = suite_dir / task_entry["file"]
             if not hdf5_file.is_file():
                 log(f"ERROR: Task file {hdf5_file} not found.")
-                return 1
+                failures.append(f"{suite} task {task_idx}: data file missing")
+                continue
 
             evidence_path = evidence_root / suite / f"{suite}_{task_idx}.npz"
             if evidence_path.is_file() and evidence_path.stat().st_size > 1024:
@@ -211,7 +214,7 @@ def main() -> int:
                 str(evidence_path),
             ]
             if not run_cmd(extract_cmd, f"Evidence extraction [{suite} Task {task_idx}]", env=run_env):
-                return 1
+                failures.append(f"{suite} task {task_idx}: evidence extraction")
 
         # ------------------------------------------------------------------
         # 3. MODEL ZOO POPULATION TRAINING (10 tasks x 3 seeds x 3 checkpoints)
@@ -220,6 +223,9 @@ def main() -> int:
         for task_entry in task_entries:
             task_idx = task_entry["task_index"]
             evidence_path = evidence_root / suite / f"{suite}_{task_idx}.npz"
+            if not evidence_path.is_file():
+                log(f"Skipping training for {suite} task {task_idx}: no evidence.")
+                continue
 
             for seed in args.seeds:
                 # Check if all 3 checkpoints already exist for this seed
@@ -261,12 +267,14 @@ def main() -> int:
                     train_cmd.extend(["--steps", str(args.steps)])
 
                 if not run_cmd(train_cmd, f"Train zoo [{suite} Task {task_idx} Seed {seed}]", env=run_env):
-                    return 1
+                    failures.append(f"{suite} task {task_idx} seed {seed}: training")
 
         # ------------------------------------------------------------------
         # 4. DISK CLEANUP: REMOVE RAW HDF5s TO RECLAIM DISK SPACE
         # ------------------------------------------------------------------
-        if not args.keep_raw:
+        if not args.keep_raw and any(f.startswith(f"{suite} ") for f in failures):
+            log(f"CLEANUP SKIPPED: {suite} has failed runs; keeping raw files for the retry.")
+        elif not args.keep_raw:
             raw_files = list(suite_dir.glob("*.hdf5")) + list(suite_dir.glob("*.h5"))
             freed_bytes = sum(f.stat().st_size for f in raw_files)
             for rf in raw_files:
@@ -297,6 +305,12 @@ def main() -> int:
         log("Notice: Full verification expects all 4 reference suites with 10 tasks each.")
 
     total_time = time.perf_counter() - overall_start
+    if failures:
+        banner(f"FAILED RUNS: {len(failures)} (resubmit to retry only these)")
+        for failure in failures:
+            print(f"  - {failure}", flush=True)
+        banner(f"MODEL ZOO CONSTRUCTION STOPPED WITH FAILURES AFTER {total_time / 60:.1f} MINUTES")
+        return 1
     banner(f"MODEL ZOO CONSTRUCTION COMPLETE IN {total_time / 60:.1f} MINUTES")
     return 0
 

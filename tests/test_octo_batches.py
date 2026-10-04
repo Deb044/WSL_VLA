@@ -61,3 +61,18 @@ def test_conform_batch_drops_only_checkpoint_unsupported_observations():
     conformed = conform_batch_to_octo_example(batch, example)
     assert set(conformed["observation"]) == {"image_primary", "timestep_pad_mask"}
     assert "proprio" not in conformed["observation"]
+
+
+def test_action_normalization_tolerates_a_constant_dimension():
+    observations = {}
+    varying = np.array([[0.0, 1.0], [2.0, 3.0], [4.0, 7.0]], dtype=np.float32)
+    constant = np.full((3, 1), -1.0, dtype=np.float32)
+    episode = LiberoEpisode("demo_0", np.concatenate([varying, constant], axis=1), observations)
+    normalization = ActionNormalization.fit((episode,))
+    reference = ActionNormalization.fit((LiberoEpisode("demo_0", varying, observations),))
+    assert normalization.std[-1] == 1.0
+    np.testing.assert_array_equal(normalization.mean[:2], reference.mean)
+    np.testing.assert_array_equal(normalization.std[:2], reference.std)
+    normalized = normalization.normalize(episode.actions)
+    np.testing.assert_array_equal(normalized[:, -1], 0.0)
+    np.testing.assert_allclose(normalization.denormalize(normalized), episode.actions, atol=1e-6)

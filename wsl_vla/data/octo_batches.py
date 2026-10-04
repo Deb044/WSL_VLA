@@ -30,8 +30,9 @@ class ActionNormalization:
             raise ValueError("cannot fit action normalization without training episodes")
         values = np.concatenate(arrays, axis=0)
         std = values.std(axis=0)
-        if np.any(std <= epsilon):
-            raise ValueError("training action statistics contain a constant dimension")
+        # A dimension that never changes (e.g. a gripper that never toggles in a
+        # push task) normalizes to zero and denormalizes back to its constant.
+        std = np.where(std <= epsilon, 1.0, std)
         return cls(values.mean(axis=0).astype(np.float32), std.astype(np.float32), len(values))
 
     def normalize(self, actions: np.ndarray) -> np.ndarray:

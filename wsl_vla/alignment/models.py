@@ -32,6 +32,49 @@ def require_jax() -> None:
         ) from _IMPORT_ERROR
 
 
+ATTENTION_QUERY_CHUNK = 1024
+
+
+def chunked_dot_product_attention(query, key, value, bias=None, mask=None, **kwargs):
+    """Exact softmax attention evaluated over rematerialized query chunks.
+
+    A packed adapter has about 20k tokens, so one dense attention map is
+    several GB per layer and a 4-sample training step needs ~184 GB. Splitting
+    queries keeps peak memory at one ``[batch, heads, chunk, tokens]`` slab while
+    producing the same output as ``nn.dot_product_attention``.
+    """
+
+    if bias is not None or (
+        kwargs.get("dropout_rate", 0.0) > 0 and not kwargs.get("deterministic", True)
+    ):
+        raise ValueError("chunked attention supports neither bias nor dropout")
+    length = query.shape[-3]
+    chunk = min(ATTENTION_QUERY_CHUNK, length)
+    padded = -(-length // chunk) * chunk
+    pad = padded - length
+    query = jnp.pad(query, [(0, 0)] * (query.ndim - 3) + [(0, pad), (0, 0), (0, 0)])
+    if mask is not None:
+        mask = jnp.broadcast_to(mask, (*query.shape[:-3], mask.shape[-3], length, key.shape[-3]))
+        mask = jnp.pad(mask, [(0, 0)] * (mask.ndim - 2) + [(0, pad), (0, 0)])
+    chunks = padded // chunk
+
+    @jax.checkpoint
+    def attend(index):
+        start = index * chunk
+        query_chunk = jax.lax.dynamic_slice_in_dim(query, start, chunk, axis=-3)
+        mask_chunk = (
+            None if mask is None else jax.lax.dynamic_slice_in_dim(mask, start, chunk, axis=-2)
+        )
+        return nn.dot_product_attention(
+            query_chunk, key, value, mask=mask_chunk, precision=kwargs.get("precision")
+        )
+
+    output = jax.lax.map(attend, jnp.arange(chunks))
+    output = jnp.moveaxis(output, 0, -4)
+    output = output.reshape(*output.shape[:-4], padded, *output.shape[-2:])
+    return output[..., :length, :, :]
+
+
 if nn is not None:  # pragma: no branch
 
     class ModalityResidualAdapter(nn.Module):
@@ -90,6 +133,7 @@ if nn is not None:  # pragma: no branch
                 x = nn.SelfAttention(
                     num_heads=self.heads,
                     dropout_rate=0.0,
+                    attention_fn=chunked_dot_product_attention,
                     name=f"encoder_attention_{index}",
                 )(x, mask=attention_mask, deterministic=not train)
                 x = residual + x
@@ -225,6 +269,10 @@ if nn is not None:  # pragma: no branch
             self.action_evidence = EvidenceProjector(
                 latent_dim=self.latent_dim, name="action_evidence"
             )
+            self.task_classifiers = {
+                name: nn.Dense(self.task_count, name=f"{name}_task_classifier")
+                for name in ("vision", "language", "action")
+            }
             self.log_temperatures = {
                 name: self.param(
                     f"log_temperature_{name}",
@@ -259,7 +307,7 @@ if nn is not None:  # pragma: no branch
                 "action": self.action_evidence(action_features),
             }
             task_logits = {
-                name: nn.Dense(self.task_count, name=f"{name}_task_classifier")(embedding)
+                name: self.task_classifiers[name](embedding)
                 for name, embedding in evidence.items()
             }
             temperatures = {

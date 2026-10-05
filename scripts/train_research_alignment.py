@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -314,6 +315,7 @@ def main() -> int:
         }
 
     for epoch in range(1, args.epochs + 1):
+        epoch_start = time.monotonic()
         train_rows = []
         train_weights = []
         for train_batch in batches(train_indices, shuffle=True):
@@ -341,6 +343,12 @@ def main() -> int:
                     **{name: float(value) for name, value in validation_metrics.items()},
                 },
             }
+        )
+        print(
+            f"epoch {epoch} train={train_metrics['reconstruction']:.6g} (recon) "
+            f"validation={validation_value:.6g} best={best_validation:.6g} "
+            f"stale={stale_epochs} seconds={time.monotonic() - epoch_start:.1f}",
+            flush=True,
         )
         if stale_epochs >= patience:
             break

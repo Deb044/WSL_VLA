@@ -73,3 +73,70 @@ def test_latent_refinement_early_stops_and_restores_best_validation_state():
     )
     assert len(history) == 3
     assert all(float(refined[name][0]) == pytest.approx(0.8) for name in initial)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("jax") is None, reason="JAX research extra not installed")
+def test_chunked_attention_matches_dense_attention_and_gradients(monkeypatch):
+    import flax.linen as nn
+    import jax
+    import jax.numpy as jnp
+
+    from wsl_vla.alignment import models
+
+    monkeypatch.setattr(models, "ATTENTION_QUERY_CHUNK", 4)
+    keys = jax.random.split(jax.random.PRNGKey(0), 3)
+    query, key, value = (jax.random.normal(k, (2, 11, 3, 5)) for k in keys)
+    valid = jnp.arange(11)[None] < jnp.asarray([[11], [7]])
+    mask = nn.make_attention_mask(valid, valid)
+
+    with jax.default_matmul_precision("highest"):
+        dense = nn.dot_product_attention(query, key, value, mask=mask)
+        chunked = models.chunked_dot_product_attention(query, key, value, mask=mask)
+        np.testing.assert_allclose(chunked, dense, rtol=1e-5, atol=1e-5)
+
+        def loss(attention, q):
+            return jnp.sum(jnp.sin(attention(q, key, value, mask=mask)))
+
+        np.testing.assert_allclose(
+            jax.grad(lambda q: loss(models.chunked_dot_product_attention, q))(query),
+            jax.grad(lambda q: loss(nn.dot_product_attention, q))(query),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
+
+@pytest.mark.skipif(importlib.util.find_spec("jax") is None, reason="JAX research extra not installed")
+def test_alignment_system_initializes_and_keeps_classifier_parameter_names():
+    import jax
+    import jax.numpy as jnp
+
+    from wsl_vla.alignment.models import AlignmentSystem
+
+    model = AlignmentSystem(
+        token_width=6,
+        vision_feature_dim=4,
+        language_feature_dim=5,
+        action_feature_dim=3,
+        latent_dim=8,
+        hidden_dim=16,
+        layers=1,
+        heads=2,
+        max_tokens=9,
+        max_layers=2,
+        task_count=3,
+    )
+    inputs = (
+        jnp.ones((2, 9, 6)),
+        jnp.ones((2, 9, 6), dtype=bool),
+        jnp.zeros((2, 9), dtype=jnp.int32),
+        jnp.zeros((2, 9), dtype=jnp.int32),
+        jnp.ones((2, 4, 4)),
+        jnp.ones((2, 4), dtype=bool),
+        jnp.ones((2, 5)),
+        jnp.ones((2, 3)),
+    )
+    params = model.init(jax.random.PRNGKey(0), *inputs, train=True)["params"]
+    for name in ("vision", "language", "action"):
+        assert params[f"{name}_task_classifier"]["kernel"].shape == (8, 3)
+    *_, task_logits = model.apply({"params": params}, *inputs, train=False)
+    assert task_logits["action"].shape == (2, 3)

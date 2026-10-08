@@ -40,7 +40,7 @@ echo "MUJOCO_GL=$MUJOCO_GL suite=$SUITE task=$TASK seed=$SEED ${EXTRA[*]:-} out=
 nvidia-smi -L
 
 set +e
-python scripts/run_one_task_learning_gate.py \
+python scripts/eval/run_one_task_learning_gate.py \
   --suite "$SUITE" --task-index "$TASK" --seed "$SEED" \
   --data-root "$S/data/libero" --output-root "$OUT" "${EXTRA[@]}"
 STATUS=$?

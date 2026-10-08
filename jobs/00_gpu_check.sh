@@ -42,7 +42,7 @@ for precision in ("default", "highest"):
 PY
 
 echo "== Octo zero-adapter equivalence (true float32)"
-python scripts/verify_official_octo.py --output "$OUT/octo_equivalence.json" \
+python scripts/eval/verify_official_octo.py --output "$OUT/octo_equivalence.json" \
   | grep -v '"octo_transformer/'
 
 echo "== done at $(date)"

@@ -31,6 +31,6 @@ ls /usr/share/glvnd/egl_vendor.d/ 2>/dev/null || echo "(no glvnd EGL vendor file
 python -c "import OpenGL; print('PyOpenGL', OpenGL.__version__)"
 
 echo "== render probes"
-python scripts/check_libero_render.py --output-dir "$OUT"
+python scripts/setup/check_libero_render.py --output-dir "$OUT"
 
 echo "== done at $(date)"

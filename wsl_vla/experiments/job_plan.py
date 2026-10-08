@@ -37,27 +37,27 @@ def build_methodology1_job_plan(
     add(
         "preflight",
         "gates",
-        [python, "scripts/research_preflight.py", "--output-dir", root / "preflight"],
+        [python, "scripts/eval/research_preflight.py", "--output-dir", root / "preflight"],
         outputs=[root / "preflight/preflight.json", root / "preflight/environment_lock.json"],
         gpu=False,
     )
     add(
         "zero_adapter_equivalence",
         "gates",
-        [python, "scripts/verify_official_octo.py", "--output", root / "preflight/octo_equivalence.json"],
+        [python, "scripts/eval/verify_official_octo.py", "--output", root / "preflight/octo_equivalence.json"],
         dependencies=["preflight"],
         outputs=[root / "preflight/octo_equivalence.json"],
     )
     add(
         "one_task_gate",
         "gates",
-        [python, "scripts/run_one_task_learning_gate.py", "--suite", "libero_spatial", "--task-index", 0, "--seed", 17, "--output-root", root / "gates/one_task"],
+        [python, "scripts/eval/run_one_task_learning_gate.py", "--suite", "libero_spatial", "--task-index", 0, "--seed", 17, "--output-root", root / "gates/one_task"],
         dependencies=["zero_adapter_equivalence"],
     )
     add(
         "two_task_gate",
         "gates",
-        [python, "scripts/run_official_continual.py", "--suite", "libero_spatial", "--condition", "sequential_no_regularization", "--seed", 17, "--task-count", 2, "--output-root", root / "gates/continual"],
+        [python, "scripts/eval/run_official_continual.py", "--suite", "libero_spatial", "--condition", "sequential_no_regularization", "--seed", 17, "--task-count", 2, "--output-root", root / "gates/continual"],
         dependencies=["one_task_gate"],
     )
 
@@ -73,7 +73,7 @@ def build_methodology1_job_plan(
             add(
                 evidence_id,
                 "evidence",
-                [python, "scripts/extract_research_evidence.py", "--data-file", data_file, "--suite", suite, "--task-index", task_index, "--output", evidence_path],
+                [python, "scripts/data/extract_research_evidence.py", "--data-file", data_file, "--suite", suite, "--task-index", task_index, "--output", evidence_path],
                 dependencies=["two_task_gate"],
                 outputs=[evidence_path],
             )
@@ -83,14 +83,14 @@ def build_methodology1_job_plan(
                 add(
                     job_id,
                     "model_zoo",
-                    [python, "scripts/train_research_zoo.py", "--suite", suite, "--task-index", task_index, "--seed", seed, "--evidence", evidence_path, "--output-root", root / "population"],
+                    [python, "scripts/train/train_research_zoo.py", "--suite", suite, "--task-index", task_index, "--seed", seed, "--evidence", evidence_path, "--output-root", root / "population"],
                     dependencies=[evidence_id],
                 )
                 zoo_ids.append(job_id)
     add(
         "verify_research_zoo",
         "model_zoo",
-        [python, "scripts/verify_research_zoo.py", root / "population", "--output", root / "population/verification.json"],
+        [python, "scripts/eval/verify_research_zoo.py", root / "population", "--output", root / "population/verification.json"],
         dependencies=zoo_ids,
         outputs=[root / "population/verification.json"],
         gpu=False,
@@ -107,7 +107,7 @@ def build_methodology1_job_plan(
         add(
             archive_id,
             "alignment",
-            [python, "scripts/build_alignment_archive.py", root / "population", "--held-out-suite", held_out, "--validation-task-indices", "8,9", "--output", fold / "archive.npz"],
+            [python, "scripts/data/build_alignment_archive.py", root / "population", "--held-out-suite", held_out, "--validation-task-indices", "8,9", "--output", fold / "archive.npz"],
             dependencies=["verify_research_zoo"],
             outputs=[fold / "archive.npz", fold / "archive.manifest.json"],
             gpu=False,
@@ -115,7 +115,7 @@ def build_methodology1_job_plan(
         variant_ids = []
         for variant in ("aligned", "reconstruction_only"):
             job_id = f"alignment:{held_out}:{variant}"
-            command = [python, "scripts/train_research_alignment.py", fold / "archive.npz", "--output", fold / variant]
+            command = [python, "scripts/train/train_research_alignment.py", fold / "archive.npz", "--output", fold / variant]
             if variant == "reconstruction_only":
                 command += ["--contrastive-weight", 0]
             add(job_id, "alignment", command, dependencies=[archive_id], outputs=[fold / variant / "metadata.json"])
@@ -124,7 +124,7 @@ def build_methodology1_job_plan(
         add(
             gate_id,
             "alignment",
-            [python, "scripts/run_alignment_advantage_gate.py", fold / "archive.npz", "--aligned-checkpoint", fold / "aligned", "--reconstruction-checkpoint", fold / "reconstruction_only", "--output", fold / "alignment_advantage.json"],
+            [python, "scripts/eval/run_alignment_advantage_gate.py", fold / "archive.npz", "--aligned-checkpoint", fold / "aligned", "--reconstruction-checkpoint", fold / "reconstruction_only", "--output", fold / "alignment_advantage.json"],
             dependencies=variant_ids,
             outputs=[fold / "alignment_advantage.json"],
         )
@@ -133,7 +133,7 @@ def build_methodology1_job_plan(
         add(
             bank_id,
             "alignment",
-            [python, "scripts/build_ood_reference_bank.py", root / "population", fold / "aligned", "--held-out-suite", held_out, "--output", fold / "ood_reference_bank.npz"],
+            [python, "scripts/data/build_ood_reference_bank.py", root / "population", fold / "aligned", "--held-out-suite", held_out, "--output", fold / "ood_reference_bank.npz"],
             dependencies=[gate_id],
             outputs=[fold / "ood_reference_bank.npz"],
             gpu=False,
@@ -150,7 +150,7 @@ def build_methodology1_job_plan(
                             add(
                                 job_id,
                                 "gamma_validation",
-                                [python, "scripts/run_gamma_validation.py", "--held-out-suite", held_out, "--source-suite", source, "--seed", seed, "--family", family, "--gamma-vision", candidate["vision"], "--gamma-language", candidate["language"], "--gamma-action", candidate["action"], "--patience", patience, "--alignment-checkpoint", fold / "aligned", "--evidence-root", root / "evidence", "--output-root", root / "gamma_validation"],
+                                [python, "scripts/eval/run_gamma_validation.py", "--held-out-suite", held_out, "--source-suite", source, "--seed", seed, "--family", family, "--gamma-vision", candidate["vision"], "--gamma-language", candidate["language"], "--gamma-action", candidate["action"], "--patience", patience, "--alignment-checkpoint", fold / "aligned", "--evidence-root", root / "evidence", "--output-root", root / "gamma_validation"],
                                 dependencies=[gate_id],
                             )
                             gamma_ids.append(job_id)
@@ -159,7 +159,7 @@ def build_methodology1_job_plan(
         add(
             selection_id,
             "gamma_selection",
-            [python, "scripts/select_validation_gammas.py", root / "gamma_validation" / held_out, "--held-out-suite", held_out, "--seeds", "17,42,73", "--output", fold / "gamma_selection.json", "--report", fold / "gamma_selection.report.json"],
+            [python, "scripts/eval/select_validation_gammas.py", root / "gamma_validation" / held_out, "--held-out-suite", held_out, "--seeds", "17,42,73", "--output", fold / "gamma_selection.json", "--report", fold / "gamma_selection.report.json"],
             dependencies=gamma_ids,
             outputs=[fold / "gamma_selection.json", fold / "gamma_selection.report.json"],
             gpu=False,
@@ -175,7 +175,7 @@ def build_methodology1_job_plan(
             add(
                 job_id,
                 "pilot",
-                [python, "scripts/run_official_continual.py", "--suite", pilot_suite, "--seed", seed, "--condition", condition, "--gamma-selection", pilot_fold / "gamma_selection.json", "--alignment-checkpoint", pilot_fold / "aligned", "--reconstruction-checkpoint", pilot_fold / "reconstruction_only", "--evidence-root", root / "evidence", "--tier", "development", "--output-root", root / "development/continual"],
+                [python, "scripts/eval/run_official_continual.py", "--suite", pilot_suite, "--seed", seed, "--condition", condition, "--gamma-selection", pilot_fold / "gamma_selection.json", "--alignment-checkpoint", pilot_fold / "aligned", "--reconstruction-checkpoint", pilot_fold / "reconstruction_only", "--evidence-root", root / "evidence", "--tier", "development", "--output-root", root / "development/continual"],
                 dependencies=[selection_ids[pilot_suite]],
             )
             pilot_ids.append(job_id)
@@ -192,7 +192,7 @@ def build_methodology1_job_plan(
                 add(
                     job_id,
                     "continual",
-                    [python, "scripts/run_official_continual.py", "--suite", suite, "--seed", seed, "--condition", condition, "--gamma-selection", fold / "gamma_selection.json", "--alignment-checkpoint", fold / "aligned", "--reconstruction-checkpoint", fold / "reconstruction_only", "--evidence-root", root / "evidence", "--tier", "publication", "--output-root", publication / "continual"],
+                    [python, "scripts/eval/run_official_continual.py", "--suite", suite, "--seed", seed, "--condition", condition, "--gamma-selection", fold / "gamma_selection.json", "--alignment-checkpoint", fold / "aligned", "--reconstruction-checkpoint", fold / "reconstruction_only", "--evidence-root", root / "evidence", "--tier", "publication", "--output-root", publication / "continual"],
                     dependencies=[selection_ids[suite], *pilot_ids],
                 )
                 continual_ids.append(job_id)
@@ -200,7 +200,7 @@ def build_methodology1_job_plan(
             add(
                 ood_id,
                 "ood",
-                [python, "scripts/run_official_ood.py", "--suite", suite, "--seed", seed, "--alignment-checkpoint", fold / "aligned", "--reference-bank", fold / "ood_reference_bank.npz", "--evidence-root", root / "evidence", "--tier", "publication", "--output-root", publication / "ood"],
+                [python, "scripts/eval/run_official_ood.py", "--suite", suite, "--seed", seed, "--alignment-checkpoint", fold / "aligned", "--reference-bank", fold / "ood_reference_bank.npz", "--evidence-root", root / "evidence", "--tier", "publication", "--output-root", publication / "ood"],
                 dependencies=[bank_ids[suite]],
             )
             ood_ids.append(ood_id)
@@ -209,7 +209,7 @@ def build_methodology1_job_plan(
             add(
                 swap_id,
                 "mechanistic_probes",
-                [python, "scripts/run_component_swaps.py", source / "proposed_asymmetric", "--tier", "publication", "--output-root", publication / "component_swaps"],
+                [python, "scripts/eval/run_component_swaps.py", source / "proposed_asymmetric", "--tier", "publication", "--output-root", publication / "component_swaps"],
                 dependencies=[f"continual:{suite}:seed-{seed}:proposed_asymmetric"],
             )
             swap_ids.append(swap_id)
@@ -217,16 +217,16 @@ def build_methodology1_job_plan(
             add(
                 recovery_id,
                 "mechanistic_probes",
-                [python, "scripts/run_recovery_probe.py", source / "sequential_no_regularization", "--output-root", publication / "recovery"],
+                [python, "scripts/eval/run_recovery_probe.py", source / "sequential_no_regularization", "--output-root", publication / "recovery"],
                 dependencies=[f"continual:{suite}:seed-{seed}:sequential_no_regularization"],
             )
             recovery_ids.append(recovery_id)
 
     report_root = publication / "reports"
-    add("report:continual", "reporting", [python, "scripts/report_publication_study.py", publication / "continual/ten_task_study", "--output-json", report_root / "continual_study.json", "--output-parquet", report_root / "continual_records.parquet"], dependencies=continual_ids, gpu=False)
-    add("report:ood", "reporting", [python, "scripts/report_ood_study.py", publication / "ood", "--output-json", report_root / "ood_study.json", "--output-parquet", report_root / "ood_records.parquet"], dependencies=ood_ids, gpu=False)
-    add("report:components", "reporting", [python, "scripts/report_component_swaps.py", publication / "component_swaps", "--output-json", report_root / "component_swaps.json", "--output-parquet", report_root / "component_swaps.parquet", "--output-figure", report_root / "component_drift_scatter.png"], dependencies=swap_ids, gpu=False)
-    add("audit", "reporting", [python, "scripts/audit_methodology1_study.py", root, "--output", report_root / "completion_audit.json"], dependencies=["report:continual", "report:ood", "report:components", *recovery_ids], outputs=[report_root / "completion_audit.json"], gpu=False)
+    add("report:continual", "reporting", [python, "scripts/reporting/report_publication_study.py", publication / "continual/ten_task_study", "--output-json", report_root / "continual_study.json", "--output-parquet", report_root / "continual_records.parquet"], dependencies=continual_ids, gpu=False)
+    add("report:ood", "reporting", [python, "scripts/reporting/report_ood_study.py", publication / "ood", "--output-json", report_root / "ood_study.json", "--output-parquet", report_root / "ood_records.parquet"], dependencies=ood_ids, gpu=False)
+    add("report:components", "reporting", [python, "scripts/reporting/report_component_swaps.py", publication / "component_swaps", "--output-json", report_root / "component_swaps.json", "--output-parquet", report_root / "component_swaps.parquet", "--output-figure", report_root / "component_drift_scatter.png"], dependencies=swap_ids, gpu=False)
+    add("audit", "reporting", [python, "scripts/reporting/audit_methodology1_study.py", root, "--output", report_root / "completion_audit.json"], dependencies=["report:continual", "report:ood", "report:components", *recovery_ids], outputs=[report_root / "completion_audit.json"], gpu=False)
 
     ids = [job["job_id"] for job in jobs]
     if len(ids) != len(set(ids)):

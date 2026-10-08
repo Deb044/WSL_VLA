@@ -36,7 +36,7 @@ Octo-Small results.
 The official path targets Linux, Python 3.11, and an NVIDIA GPU with CUDA
 12.8+ support, including Blackwell (sm_120). It uses JAX 0.7.1 and Flax 0.12.
 Upstream Octo `241fb3514b7c40957a86d869fecb7c7fc353f540` does not run on that
-JAX, so `third_party/octo/*.patch` ports it. `scripts/build_patched_octo.sh`
+JAX, so `third_party/octo/*.patch` ports it. `scripts/setup/build_patched_octo.sh`
 rebuilds the patch as the deterministic commit
 `a4cc964b7e77f8d8b19f533a0dfa95d653501ab7`. The model configuration pins
 `rail-berkeley/octo-small-1.5` and records the resolved checkpoint hash in every
@@ -45,11 +45,11 @@ run. LIBERO is pinned to commit
 from their installed package metadata, and checks that JAX sees a GPU.
 
 ```bash
-PYTHON=python3.11 scripts/setup_research_env.sh .venv-research
+PYTHON=python3.11 envs/scripts/setup_linux.sh .venv-research
 source .venv-research/bin/activate
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-python scripts/research_preflight.py
-python scripts/verify_official_octo.py
+python scripts/eval/research_preflight.py
+python scripts/eval/verify_official_octo.py
 pytest -m "not integration"
 ```
 
@@ -73,12 +73,12 @@ dirty state, hardware, environment, base hash, seeds, and task order.
 - Standard research outputs live under ignored `research_results/` and contain
   manifests, checkpoints, JSONL rollout records, and generated tables/figures.
 
-Start with `docs/METHODOLOGY1_RUNBOOK.md` for the exact execution order. See
-`docs/IMPLEMENTATION_STATUS.md` for implemented versus not-yet-executed work,
-and `docs/RESEARCH_PIPELINE.md` for detailed data contracts. Once the four data
-manifests exist, `scripts/plan_methodology1_jobs.py` emits the complete locked
+Start with `docs/methodology/METHODOLOGY1_RUNBOOK.md` for the exact execution order. See
+`docs/methodology/IMPLEMENTATION_STATUS.md` for implemented versus not-yet-executed work,
+and `docs/methodology/RESEARCH_PIPELINE.md` for detailed data contracts. Once the four data
+manifests exist, `scripts/reporting/plan_methodology1_jobs.py` emits the complete locked
 dependency graph for collaborator or cluster execution. The final
-`scripts/audit_methodology1_study.py` command fails unless the artifact tree is
+`scripts/reporting/audit_methodology1_study.py` command fails unless the artifact tree is
 publication-complete and provenance-consistent.
 
 ## Implemented research utilities
@@ -105,12 +105,12 @@ Each population sample directory contains `adapter.npz`, `evidence.npz`, and
 with:
 
 ```bash
-python scripts/extract_research_evidence.py \
+python scripts/data/extract_research_evidence.py \
   --data-file data/libero/libero_spatial/task_0.hdf5 \
   --suite libero_spatial --task-index 0 \
   --output research_results/evidence/libero_spatial/libero_spatial_0.npz
 
-python scripts/train_research_zoo.py \
+python scripts/train/train_research_zoo.py \
   --suite libero_spatial --task-index 0 --seed 17 \
   --evidence research_results/evidence/libero_spatial/libero_spatial_0.npz
 ```
@@ -122,11 +122,11 @@ configured late checkpoints. After completing the 40-task × three-seed
 population, assemble and train each fold with:
 
 ```bash
-python scripts/build_alignment_archive.py research_results/population \
+python scripts/data/build_alignment_archive.py research_results/population \
   --output research_results/alignment/fold.npz \
   --held-out-suite libero_spatial
 
-python scripts/train_research_alignment.py research_results/alignment/fold.npz \
+python scripts/train/train_research_alignment.py research_results/alignment/fold.npz \
   --output research_results/checkpoints/alignment/fold
 ```
 
@@ -142,7 +142,7 @@ Rollout evaluators append one `EvaluationRecord` per matrix cell. Metrics are
 computed only from the immutable records:
 
 ```bash
-python scripts/report_research_metrics.py research_results/records/run.jsonl \
+python scripts/reporting/report_research_metrics.py research_results/records/run.jsonl \
   --suite libero_spatial --seed 42 --condition proposed_asymmetric
 ```
 
@@ -150,5 +150,5 @@ Offline action MSE is diagnostic only. Publication claims require rollout-based
 success matrices, three seeds, confidence intervals, complete provenance, and
 the locked ablation set.
 
-Use `scripts/report_publication_study.py` for the final report; it requires all
+Use `scripts/reporting/report_publication_study.py` for the final report; it requires all
 four suites, three seeds, eight conditions, and every lower-triangular cell.

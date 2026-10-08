@@ -41,7 +41,7 @@ nvidia-smi -L
 df -h $S | tail -1
 
 echo "== verify population $(date)"
-python scripts/verify_research_zoo.py "$P" --output "$P/verification.json" > /dev/null
+python scripts/eval/verify_research_zoo.py "$P" --output "$P/verification.json" > /dev/null
 echo "population verified"
 
 FAILED=()
@@ -49,7 +49,7 @@ for FOLD in $FOLDS; do
   D=$R/$OUT/$FOLD
   echo "== fold $FOLD $(date)"
   if [ ! -f "$D/archive.manifest.json" ]; then
-    python scripts/build_alignment_archive.py "$P" --held-out-suite "$FOLD" \
+    python scripts/data/build_alignment_archive.py "$P" --held-out-suite "$FOLD" \
       --validation-task-indices 8,9 --output "$D/archive.npz" | tail -3
   fi
   for VARIANT in aligned reconstruction_only; do
@@ -57,7 +57,7 @@ for FOLD in $FOLDS; do
     WEIGHT=()
     if [ "$VARIANT" = reconstruction_only ]; then WEIGHT=(--contrastive-weight 0); fi
     echo "-- train $FOLD/$VARIANT $(date)"
-    if ! python scripts/train_research_alignment.py "$D/archive.npz" \
+    if ! python scripts/train/train_research_alignment.py "$D/archive.npz" \
         --output "$D/$VARIANT" ${WEIGHT[@]+"${WEIGHT[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}; then
       FAILED+=("$FOLD/$VARIANT")
     fi
@@ -66,7 +66,7 @@ for FOLD in $FOLDS; do
   if [ -f "$D/aligned/metadata.json" ] && [ -f "$D/reconstruction_only/metadata.json" ]; then
     echo "-- gate $FOLD $(date)"
     set +e
-    python scripts/run_alignment_advantage_gate.py "$D/archive.npz" \
+    python scripts/eval/run_alignment_advantage_gate.py "$D/archive.npz" \
       --aligned-checkpoint "$D/aligned" --reconstruction-checkpoint "$D/reconstruction_only" \
       --output "$D/alignment_advantage.json" > "$D/gate.log" 2>&1
     GATE=$?

@@ -31,7 +31,7 @@ Strong static inference; must be resolved by an integration test in the pinned W
 - `load_research_octo` performs that mutation before the equivalence comparison (`wsl_vla/research/octo_bridge.py:197-205`).
 - Only afterward does `assert_zero_adapter_equivalence` call `bundle.pretrained_model.run_transformer` (`wsl_vla/research/octo_bridge.py:228-244`).
 - In the pinned upstream Octo source, `OctoTransformer.__call__` resolves the module-global `BlockTransformer` when it applies the transformer (`octo/model/octo_module.py:277-284`). Thus the supposedly “original” model is liable to execute the patched class while carrying an unpatched parameter tree. At best the test compares two patched graphs; at worst it fails on missing adapter parameters. It does not robustly preserve a pre-patch reference output.
-- No automated test exercises `octo_bridge.py`; the only check is the external `scripts/verify_official_octo.py` command.
+- No automated test exercises `octo_bridge.py`; the only check is the external `scripts/eval/verify_official_octo.py` command.
 
 Required correction: compute and retain reference outputs before patching, or construct an isolated unmodified module namespace/class; then compare transformer outputs and action-head loss/predictions after merge. Make this an integration test that must pass before any zoo training.
 
@@ -39,9 +39,9 @@ Required correction: compute and retain reference outputs before patching, or co
 
 Confirmed.
 
-- `docs/RESEARCH_PIPELINE.md:5-7` says scripts whose names contain `research` belong to the publication path.
-- `scripts/run_research_benchmark.py` imports and runs the PyTorch surrogate, reports offline action MSE, initializes missing latents randomly (`:151-163`), and performs arbitrary cross-task swaps (`:224-245`). This directly conflicts with the required official-Octo, rollout-SR, mapped-initialization, and consecutive-checkpoint protocols.
-- `scripts/orchestrate_zoo.py:9-15` and `:76-80` claim to train “Octo-Small,” but dispatch `scripts/train_zoo.py`; that script builds `models/octo_small.py`, explicitly a custom PyTorch implementation (`models/octo_small.py:1-10`), and optimizes MSE (`scripts/train_zoo.py:109-127`).
+- `docs/methodology/RESEARCH_PIPELINE.md:5-7` says scripts whose names contain `research` belong to the publication path.
+- `scripts/eval/run_research_benchmark.py` imports and runs the PyTorch surrogate, reports offline action MSE, initializes missing latents randomly (`:151-163`), and performs arbitrary cross-task swaps (`:224-245`). This directly conflicts with the required official-Octo, rollout-SR, mapped-initialization, and consecutive-checkpoint protocols.
+- `scripts/train/orchestrate_zoo.py:9-15` and `:76-80` claim to train “Octo-Small,” but dispatch `scripts/train/train_zoo.py`; that script builds `models/octo_small.py`, explicitly a custom PyTorch implementation (`models/octo_small.py:1-10`), and optimizes MSE (`scripts/train/train_zoo.py:109-127`).
 - The dataset class now defaults to `allow_synthetic=False`, so these scripts no longer silently fall back to synthetic data. Nevertheless, their naming and printed claims can still cause surrogate results to be mistaken for research results.
 
 Impact: the repository can generate scientifically invalid artifacts under authoritative-sounding command names.
@@ -52,9 +52,9 @@ Required correction: move all proxy programs under a clearly isolated `smoke/` n
 
 Confirmed.
 
-- `scripts/build_alignment_archive.py` consumes `adapter.npz`, `evidence.npz`, and metadata, but no official-Octo command produces those sample directories.
+- `scripts/data/build_alignment_archive.py` consumes `adapter.npz`, `evidence.npz`, and metadata, but no official-Octo command produces those sample directories.
 - `wsl_vla/research/evidence.py` implements action statistics and feature padding only (`:8-80`). It does not extract frozen Octo visual-tokenizer features or official masked language features.
-- `TaskEvidence` is defined (`wsl_vla/research/contracts.py:98-142`) but is not used by the archive builder. The builder reads raw arrays directly and therefore does not enforce evidence episode IDs, preprocessing version, raw feature references, or train-only evidence provenance (`scripts/build_alignment_archive.py:89-98`).
+- `TaskEvidence` is defined (`wsl_vla/research/contracts.py:98-142`) but is not used by the archive builder. The builder reads raw arrays directly and therefore does not enforce evidence episode IDs, preprocessing version, raw feature references, or train-only evidence provenance (`scripts/data/build_alignment_archive.py:89-98`).
 - The legacy orchestrator produces one proxy checkpoint per task, not the required official population of 40 tasks × 3 seeds × 3 late checkpoints.
 
 Impact: alignment training cannot be supplied with valid inputs, and evidence leakage/preprocessing consistency is not auditable.
@@ -63,10 +63,10 @@ Impact: alignment training cannot be supplied with valid inputs, and evidence le
 
 Confirmed.
 
-- The proposal and WeightCLIP require auxiliary task/dataset-classification supervision on prompt encoders. `AlignmentSystem` contains no classification heads (`wsl_vla/research/jax_modules.py:190-263`) and the trainer contains no classification loss (`scripts/train_research_alignment.py:156-178`).
-- `configs/research/base.yaml:40-45` defines reconstruction and modality-specific weights, but the trainer never reads this config. It applies one CLI scalar uniformly to the sum of all three losses (`scripts/train_research_alignment.py:156-178`).
+- The proposal and WeightCLIP require auxiliary task/dataset-classification supervision on prompt encoders. `AlignmentSystem` contains no classification heads (`wsl_vla/research/jax_modules.py:190-263`) and the trainer contains no classification loss (`scripts/train/train_research_alignment.py:156-178`).
+- `configs/research/base.yaml:40-45` defines reconstruction and modality-specific weights, but the trainer never reads this config. It applies one CLI scalar uniformly to the sum of all three losses (`scripts/train/train_research_alignment.py:156-178`).
 - The stated architecture is a shared transformer encoder/decoder. The encoder is transformer-like, but the decoder is only a per-token Dense–GELU–LayerNorm–Dense MLP and discards component/layer identifiers (`wsl_vla/research/jax_modules.py:105-118`). This is a material architecture change that needs justification or correction.
-- Default contrastive batches contain two samples (`scripts/train_research_alignment.py:81`). Gradient accumulation occurs after each independently computed loss (`:193-210`) and therefore does not enlarge the negative set. Random sample shuffling (`:220-227`) rarely guarantees repeated-task positives. With only one negative and usually only the paired positive, the implemented multi-positive objective is poorly identified despite the proposal explicitly requiring population diversity.
+- Default contrastive batches contain two samples (`scripts/train/train_research_alignment.py:81`). Gradient accumulation occurs after each independently computed loss (`:193-210`) and therefore does not enlarge the negative set. Random sample shuffling (`:220-227`) rarely guarantees repeated-task positives. With only one negative and usually only the paired positive, the implemented multi-positive objective is poorly identified despite the proposal explicitly requiring population diversity.
 - The alignment advantage gate exists (`wsl_vla/research/alignment_eval.py:45-74`) but is not called by any non-test code. A reconstruction-only comparison is therefore not enforced before downstream use.
 
 Impact: even if an archive were supplied, the trained representation would not yet implement or validate the proposed alignment objective.
@@ -75,7 +75,7 @@ Impact: even if an archive were supplied, the trained representation would not y
 
 Confirmed.
 
-- Linear ridge mapping and per-token empirical-shell estimation are implemented in the alignment trainer (`scripts/train_research_alignment.py:295-322`). This is a valid first mapper.
+- Linear ridge mapping and per-token empirical-shell estimation are implemented in the alignment trainer (`scripts/train/train_research_alignment.py:295-322`). This is a valid first mapper.
 - The memory-bank mapper and nearest-neighbor retrieval initialization are absent.
 - `project_to_empirical_shell` and `refine_latents` exist separately (`wsl_vla/research/jax_modules.py:344-350`, `:389-422`), but refinement never invokes shell projection and no production path maps evidence, projects it, decodes it, and applies official Octo loss.
 - `decoded_token_task_loss` returns the Octo action-head loss object directly (`wsl_vla/research/latent_adapter.py:79-91`), while refinement expects a scalar task loss. No integrated adapter resolves the action head's auxiliary metrics or validates gradients through the actual decoder/Octo graph.
@@ -89,7 +89,7 @@ Impact: the central intervention—component-asymmetric latent regularization du
 Confirmed.
 
 - There is no LIBERO simulator rollout implementation. The generic sequential runner accepts a rollout callback but no official caller supplies one.
-- The report command computes one condition/seed matrix and basic metrics only (`scripts/report_research_metrics.py:21-54`). It does not aggregate three seeds, calculate confidence intervals for primary comparisons, produce tables/figures, measure memory, or analyze drift-to-behavior correlations.
+- The report command computes one condition/seed matrix and basic metrics only (`scripts/reporting/report_research_metrics.py:21-54`). It does not aggregate three seeds, calculate confidence intervals for primary comparisons, produce tables/figures, measure memory, or analyze drift-to-behavior correlations.
 - Correlation and component-swap utilities are isolated and unused by production code. The safe swap helper correctly enforces consecutive stages (`wsl_vla/research/component_analysis.py:12-41`), but the misleading legacy research benchmark performs arbitrary cross-task swaps.
 - `EvaluationRecord` lacks a swap condition, paired checkpoint identity, resource measurements, evaluation initialization identity, and failure status (`wsl_vla/research/contracts.py:178-200`).
 - `forward_transfer` is defined as diagonal performance minus an independent-task baseline (`wsl_vla/research/metrics.py:76-81`). That may be a defensible “benefit at acquisition” measure, but it is not documented and is not conventional pre-training forward transfer. The record layer rejects upper-triangular evaluations (`wsl_vla/research/records.py:58-64`), so conventional forward transfer cannot be recovered.
@@ -102,7 +102,7 @@ Impact: even successful training would not currently yield the required publicat
 Confirmed.
 
 - Local result: **21 passed, 3 skipped** using an explicit writable pytest base directory.
-- The skipped JAX test uses a synthetic arithmetic loss over three arrays (`tests/test_jax_research.py:13-49`); it does not traverse the trained decoder, Octo transformer, or diffusion head. Therefore it does not satisfy the required gradient-integrity gate.
+- The skipped JAX test uses a synthetic arithmetic loss over three arrays (`tests/unit/test_adapters/test_jax_research.py:13-49`); it does not traverse the trained decoder, Octo transformer, or diffusion head. Therefore it does not satisfy the required gradient-integrity gate.
 - No test loads the pinned Octo checkpoint, proves zero-adapter equivalence, performs a packed-token prediction round trip, demonstrates one-task learning over frozen-base SR, or runs a two-task rollout matrix.
 - Host preflight correctly reports the current environment as invalid: Windows, Python 3.13.5, JAX/Flax/Optax/Octo absent, no GPU visible, and no LIBERO manifests. This is good fail-closed behavior, but it means the official path is untested here.
 
@@ -113,9 +113,9 @@ Impact: green unit tests currently validate utilities, not the research mechanis
 Confirmed.
 
 - Model and Octo Git revisions are pinned, and adapter/data hashes are designed into several schemas.
-- `requirements-research.txt` pins several direct packages but is not a complete transitive lock with artifact hashes. `environment.yml` describes the legacy PyTorch environment instead of the official research environment.
+- `envs/requirements/research.txt` pins several direct packages but is not a complete transitive lock with artifact hashes. `environment.yml` describes the legacy PyTorch environment instead of the official research environment.
 - The run-manifest writer creates only an initial manifest. No official runner updates `finished_at`, failures, wall time, peak VRAM, peak RAM, or storage.
-- Archive protocol values for seeds and checkpoint fractions are duplicated as literals (`scripts/build_alignment_archive.py:106-120`) instead of being derived from and hashing the locked config.
+- Archive protocol values for seeds and checkpoint fractions are duplicated as literals (`scripts/data/build_alignment_archive.py:106-120`) instead of being derived from and hashing the locked config.
 
 Impact: a future run would still be difficult to reproduce exactly and to audit after failure.
 

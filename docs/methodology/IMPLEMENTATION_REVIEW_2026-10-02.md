@@ -1,7 +1,7 @@
 # Implementation Review (2026-10-02): current code vs PLAN.md
 
 ## Context
-This is a critical read of the codebase against PLAN.md. `docs/IMPLEMENTATION_STATUS.md` marks almost every plan item "Implemented", but that only means code and host tests exist. Nothing has run on CUDA yet. This review traces the real code paths to find where the implementation will fail or will not support the paper's claims, even if every unit test passes. It then sets out a remediation plan sized for the compute we actually have: the IIT Guwahati GPU cluster (see **Target compute** below).
+This is a critical read of the codebase against PLAN.md. `docs/methodology/IMPLEMENTATION_STATUS.md` marks almost every plan item "Implemented", but that only means code and host tests exist. Nothing has run on CUDA yet. This review traces the real code paths to find where the implementation will fail or will not support the paper's claims, even if every unit test passes. It then sets out a remediation plan sized for the compute we actually have: the IIT Guwahati GPU cluster (see **Target compute** below).
 
 ## Overall verdict
 The engineering around the method is strong: provenance, fail-closed contracts, leakage checks, the job graph, metrics and audits. The core path is official Octo, then adapters, then packing, then alignment, then the mapper, then refinement. It has blockers in compute feasibility and design that will stop it before any publishable number exists. The biggest risk is not missing features. It is that the weight-space representation is far larger than the plan assumed, and everything downstream inherits that.
@@ -32,20 +32,20 @@ The cluster's 24 GB GPU slice relaxes the plan's ≤8 GB assumption for Octo tra
 
 The original stack (JAX 0.4.20 on CUDA 11) cannot run on Blackwell. It has been ported and validated on CPU (macOS arm64). It still has to be confirmed on the cluster GPU.
 
-- **New stack:** Python 3.11, JAX 0.7.1 (`jax[cuda12]`, with CUDA ≥ 12.8 libraries from pip), Flax 0.12.0, optax 0.2.8, orbax-checkpoint 0.12.6, TensorFlow 2.20 (file I/O only), Transformers 4.57.6 (< 5, because Octo's T5 encoder needs Flax). The exact pins are in `requirements-research.txt`.
+- **New stack:** Python 3.11, JAX 0.7.1 (`jax[cuda12]`, with CUDA ≥ 12.8 libraries from pip), Flax 0.12.0, optax 0.2.8, orbax-checkpoint 0.12.6, TensorFlow 2.20 (file I/O only), Transformers 4.57.6 (< 5, because Octo's T5 encoder needs Flax). The exact pins are in `envs/requirements/research.txt`.
 - **Octo port:** a 38-line mechanical patch in `third_party/octo/`:
   - replaces removed `jax.tree_map` / `jax.tree_leaves` / `jax.random.KeyArray`;
   - fixes `process_allgather`, which on new JAX adds a process axis and corrupted the example batch;
   - drops `distrax`.
   
-  `scripts/build_patched_octo.sh` rebuilds it as the deterministic commit `a4cc964b…` (verified identical across rebuilds), so preflight still checks an exact installed revision.
+  `scripts/setup/build_patched_octo.sh` rebuilds it as the deterministic commit `a4cc964b…` (verified identical across rebuilds), so preflight still checks an exact installed revision.
 - **Validated on the new stack:**
   - The pinned `octo-small-1.5` checkpoint loads; the new orbax reads the old format unchanged.
   - **Zero-adapter equivalence passes** at atol 1e-6 (72 adapter tensors, 11 diffusion kernels). The base hash is unchanged (`6bc3c654…`).
   - A jitted adapter gradient step gives finite, non-zero gradients for every modality.
   - All host tests pass.
   - A real LIBERO environment builds, renders and steps.
-- **Install** only through `scripts/setup_research_env.sh`, which handles the ordered `--no-deps` steps.
+- **Install** only through `envs/scripts/setup_linux.sh`, which handles the ordered `--no-deps` steps.
 - **Do not mix environments within a comparison.** No results exist yet, so the whole study moves to this stack. The environment lock in every manifest records it.
 
 ## Blockers (will fail or cannot run at the planned scale, including on 24 GB)
@@ -103,13 +103,13 @@ The original stack (JAX 0.4.20 on CUDA 11) cannot run on Blackwell. It has been 
 ## Findings from the Blackwell port
 
 20. **The last layer's vision and language adapters are dead parameters.** Adapters run after each block. After block 11, vision and language tokens feed nothing downstream; only readout tokens reach the action head. So `adapter_vision_11` and `adapter_language_11` always receive exactly zero gradient (measured). They add 2 × 384 always-zero rows to every packed sample. This is structural, not caused by the port. Either drop them from training and packing, or apply adapters before each block instead.
-21. **LIBERO was never installable from `requirements-research.txt`.** LIBERO's `setup.py` declares no dependencies (robosuite, bddl, mujoco and torch were never installed). Its top-level package also lacks `__init__.py`, so `pip install libero @ git+…` installs nothing importable. Editable installs then drop the commit from pip metadata, so the preflight revision check could not have passed either. Fixed: the setup script installs the simulator dependencies and an editable checkout, and the provenance check now reads the commit of a clean editable git checkout.
+21. **LIBERO was never installable from `envs/requirements/research.txt`.** LIBERO's `setup.py` declares no dependencies (robosuite, bddl, mujoco and torch were never installed). Its top-level package also lacks `__init__.py`, so `pip install libero @ git+…` installs nothing importable. Editable installs then drop the commit from pip metadata, so the preflight revision check could not have passed either. Fixed: the setup script installs the simulator dependencies and an editable checkout, and the provenance check now reads the commit of a clean editable git checkout.
 22. **Proprio key mismatch confirmed (#11).** The live LIBERO environment exposes `robot0_eef_pos`, `robot0_eef_quat` and `robot0_gripper_qpos`, not the `ee_pos` / `ee_ori` / `gripper_states` HDF5 names now in `configs/research/base.yaml`.
 23. **Speed reference (CPU, not representative of the GPU):** one jitted adapter step at batch 2 takes about 0.6 s after about 15 s of compilation. LIBERO steps at about 0.2 s per step with rendering on a laptop.
 
 ## Cluster-specific gaps in the current code
 
-15. **No SLURM integration.** `scripts/plan_methodology1_jobs.py` builds a dependency graph but nothing emits or submits `sbatch` scripts, and nothing resumes after a walltime kill. Long scripts (zoo training, continual runs) must checkpoint per stage and skip completed stages on restart. `orchestrate_research_zoo.py` is the closest existing pattern.
+15. **No SLURM integration.** `scripts/reporting/plan_methodology1_jobs.py` builds a dependency graph but nothing emits or submits `sbatch` scripts, and nothing resumes after a walltime kill. Long scripts (zoo training, continual runs) must checkpoint per stage and skip completed stages on restart. `orchestrate_research_zoo.py` is the closest existing pattern.
 16. **The ≤8 GB profile is hard-coded.** Several scripts refuse to run unless `XLA_PYTHON_CLIENT_PREALLOCATE=false`, and they keep micro-batch 2 × accumulation 8. That still works on 24 GB, but it wastes the slice. Add a `24gb` profile with a larger micro-batch (to be measured; roughly 8–16) and less accumulation.
 17. **Rendering backend.** `setup_env.sh` and the runbook assume EGL. If MIG rejects EGL, rollouts must fall back to OSMesa on CPU. That makes rollouts CPU-bound, so per-job CPU count matters and the CPU request must be sized accordingly.
 18. **Rollout budget will dominate the GPU-hours.**
@@ -133,13 +133,13 @@ The original stack (JAX 0.4.20 on CUDA 11) cannot run on Blackwell. It has been 
    - Download LIBERO and the pinned Octo checkpoint to `/scratch/<user>/data`. If compute nodes have no internet, do this from the login node.
    - Keep the git checkout in `/home` and symlink `data/` and `research_results/` to `/scratch`.
    - Run a one-line MuJoCo render test under both `MUJOCO_GL=egl` and `MUJOCO_GL=osmesa` inside an `sbatch` job, and record which one works.
-   - Build the environment on the login node with `scripts/setup_research_env.sh` (Blackwell stack, branch `blackwell-stack`).
+   - Build the environment on the login node with `envs/scripts/setup_linux.sh` (Blackwell stack, branch `blackwell-stack`).
    - In a `gpu_small` job, confirm `jax.default_backend() == "gpu"` and that a matmul runs. Then run preflight and `verify_official_octo.py` on the GPU.
 2. **SLURM job layer (#15–#17).**
    - Add `scripts/slurm/` templates (`--gres` for the MIG slice, `--time`, `--cpus-per-task`, `--mem`) and a submitter that walks the existing job graph from `plan_methodology1_jobs.py` using `--dependency=afterok`.
    - Make every long script resumable at stage granularity.
    - Add a `24gb` resource profile alongside the ≤8 GB one, and choose the rendering backend from an environment variable.
-3. **Run the gates first, on the cluster:** preflight, zero-equivalence, then the one-task learning gate (`scripts/run_one_task_learning_gate.py`).
+3. **Run the gates first, on the cluster:** preflight, zero-equivalence, then the one-task learning gate (`scripts/eval/run_one_task_learning_gate.py`).
    - If Octo-Small plus these adapters cannot beat the frozen base, nothing downstream matters (#14).
    - Fix image orientation (#12) before this.
    - **Measure seconds per training step and seconds per rollout episode here.** These two numbers set the real GPU-hour budget for #18.
@@ -162,15 +162,15 @@ The original stack (JAX 0.4.20 on CUDA 11) cannot run on Blackwell. It has been 
    - Describe the adapters as residual bottlenecks.
    - Pre-register that NN/mean-latent baselines may dominate given 30 training tasks.
    - Fix proprio handling and the partial-download path.
-   - Replace the stale 7B estimates in `docs/compute.md` with numbers measured in step 3.
+   - Replace the stale 7B estimates in `docs/methodology/compute.md` with numbers measured in step 3.
 
 ## Verification
 - **On the cluster, via `sbatch`:**
   - Render test.
-  - `scripts/research_preflight.py`, then `assert_zero_adapter_equivalence`, then the one-task gate, then the 2-task smoke run.
+  - `scripts/eval/research_preflight.py`, then `assert_zero_adapter_equivalence`, then the one-task gate, then the 2-task smoke run.
   - Check that the manifests record measured VRAM, wall time and episode time.
 - **Resumability:** kill a continual job mid-run with `scancel`, resubmit it, and confirm that completed stages are skipped and the final records match an uninterrupted run.
-- **After step 4:** assert the packed token count is under a budget (e.g. ≤ 1024) in `tests/test_research_contracts.py`, and keep round-trip tests in `tests/test_alignment_checkpoint_contract.py`.
+- **After step 4:** assert the packed token count is under a budget (e.g. ≤ 1024) in `tests/unit/test_experiments/test_research_contracts.py`, and keep round-trip tests in `tests/unit/test_alignment/test_alignment_checkpoint_contract.py`.
 - **After step 5:**
   - Add a test that times one jitted refinement step, and keep the "detached decoder must fail" gradient test.
   - Add a test asserting that LoRA and latent stages see an equal number of samples.

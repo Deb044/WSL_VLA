@@ -174,7 +174,7 @@ def main() -> int:
             download_cmd.extend(["--max_tasks", str(args.tasks_per_suite)])
 
         if args.skip_download:
-            sys.path.insert(0, str(REPO_ROOT / "scripts"))
+            sys.path.insert(0, str(REPO_ROOT / "scripts" / "setup"))
             from download_libero import generate_suite_manifest
 
             generate_suite_manifest(suite, str(suite_dir))

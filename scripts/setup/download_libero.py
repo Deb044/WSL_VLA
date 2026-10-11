@@ -105,7 +105,7 @@ def generate_suite_manifest(suite_name: str, suite_dir: str, tasks_yaml: str = "
 
     yaml_path = Path(tasks_yaml)
     if not yaml_path.is_file():
-        yaml_path = REPO_ROOT / tasks_yaml
+        yaml_path = Path(__file__).resolve().parents[2] / tasks_yaml
     if not yaml_path.is_file():
         return
 

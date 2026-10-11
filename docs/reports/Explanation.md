@@ -12,7 +12,7 @@ rollout-based continual-learning metrics.
 The repository also retains its original PyTorch policy analogue for fast smoke
 tests. That model does not implement official Octo and is explicitly excluded
 from research claims. The fastest onboarding path is `README.md`,
-`docs/RESEARCH_PIPELINE.md`, `configs/research/base.yaml`, then the functional
+`docs/methodology/RESEARCH_PIPELINE.md`, `configs/research/base.yaml`, then the functional
 subpackages under `wsl_vla/`.
 
 ### Scope and evidence
@@ -104,8 +104,8 @@ is incomplete or contains duplicate cells.
 ## 6. Suggested reading path
 
 1. `README.md` - environment, evidence boundary, and runnable entry points.
-2. `docs/RESEARCH_PIPELINE.md` - complete contracts and scaling gates.
-3. `docs/METHODOLOGY_1_GUIDE.md` - original mathematical proposal.
+2. `docs/methodology/RESEARCH_PIPELINE.md` - complete contracts and scaling gates.
+3. `docs/methodology/METHODOLOGY_1_GUIDE.md` - original mathematical proposal.
 4. WeightCLIP - alignment, mapping, empirical shell, and latent refinement.
 5. The continual-VLA paper - exact LIBERO order, SR/NBT, component swaps, and
    recovery analysis.
@@ -131,5 +131,5 @@ tested on this host without the official environment, checkpoint, and datasets.
 
 - [Official Octo repository](https://github.com/octo-models/octo)
 - [Pinned Octo-Small checkpoint](https://huggingface.co/rail-berkeley/octo-small-1.5)
-- [Research pipeline](docs/RESEARCH_PIPELINE.md)
+- [Research pipeline](docs/methodology/RESEARCH_PIPELINE.md)
 - [Locked experiment configuration](configs/research/base.yaml)

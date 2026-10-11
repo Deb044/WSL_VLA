@@ -2,7 +2,7 @@
 """Train the joint aligned weight autoencoder on a strict packed-zoo archive.
 
 The input NPZ is deliberately explicit and contains no pickled objects. Required
-arrays are documented in ``docs/RESEARCH_PIPELINE.md``.
+arrays are documented in ``docs/methodology/RESEARCH_PIPELINE.md``.
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ def main() -> int:
         import jax.numpy as jnp
         import optax
     except ImportError as exc:
-        raise RuntimeError("install requirements-research.txt in WSL2 before alignment training") from exc
+        raise RuntimeError("install envs/requirements/research.txt in WSL2 before alignment training") from exc
 
     from wsl_vla.alignment.models import (
         AlignmentSystem,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tests/test_local_dryrun.py
+tests/unit/test_smoke/test_local_dryrun.py
 
 Comprehensive local CPU pre-flight dry-run unit test suite.
 Validates the unified VLA factory (build_vla_model), Octo-Small (27M) architecture,

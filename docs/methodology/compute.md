@@ -2,7 +2,7 @@
 
 This 7B-model estimate is not the Octo-Small Methodology 1 execution spec and
 must not be cited as measured resource use. Run manifests record actual wall
-time, VRAM, RAM, and storage. Follow `docs/METHODOLOGY1_RUNBOOK.md`.
+time, VRAM, RAM, and storage. Follow `docs/methodology/METHODOLOGY1_RUNBOOK.md`.
 
 # Compute Allocation Justification & Sizing Spec Sheet: Mathematical Derivations
 

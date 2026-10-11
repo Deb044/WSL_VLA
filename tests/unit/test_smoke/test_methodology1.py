@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tests/test_methodology1.py
+tests/unit/test_smoke/test_methodology1.py
 
 Unit test suite for Methodology 1:
   - Section 1.1: Component-Factorized Tokenization & Autoencoder (g_phi, h_psi)

@@ -4,7 +4,7 @@
 
 The functional subpackages under `wsl_vla/` are the primary publication path:
 `octo`, `adapters`, `alignment`, `data`, `evaluation`, and `experiments`. In particular,
-`scripts/run_research_benchmark.py` is a deprecated legacy fixture despite its
+`scripts/eval/run_research_benchmark.py` is a deprecated legacy fixture despite its
 historical filename. Every legacy PyTorch command now requires `--smoke-test`,
 writes under `smoke_results/`, and marks artifacts as publication-ineligible.
 The custom analogue is isolated under `wsl_vla/smoke/legacy_torch`; it is not

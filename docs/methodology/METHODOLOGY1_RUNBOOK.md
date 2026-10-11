@@ -7,7 +7,7 @@ The old PyTorch scripts are smoke fixtures and are not publication-eligible.
 
 Use Linux, Python 3.11, a CUDA 12.8+ capable GPU (Blackwell included), and
 the pinned Octo port and LIBERO revisions. Install only through
-`scripts/setup_research_env.sh`, which performs the ordered `--no-deps` steps
+`envs/scripts/setup_linux.sh`, which performs the ordered `--no-deps` steps
 for dlimp, the patched Octo commit, and the editable LIBERO checkout. Freeze a
 clean Git commit before publication jobs. Every condition in a comparison must
 come from the same environment lock.

@@ -406,7 +406,7 @@ Once compute access is granted and you SSH into the remote machine, execute this
 ### Step 1: The 5-Step Smoke Test (Time: 2 minutes)
 ```bash
 # Verify GPU memory allocation, mixed-precision, and backward pass on 1 batch
-python scripts/train_zoo.py --max_steps 5 --debug --suite libero_spatial --task_id 0
+python scripts/train/train_zoo.py --max_steps 5 --debug --suite libero_spatial --task_id 0
 ```
 - **Verification criteria**:
   - `nvidia-smi` confirms VRAM allocation stays within limits (no OOM).
@@ -416,7 +416,7 @@ python scripts/train_zoo.py --max_steps 5 --debug --suite libero_spatial --task_
 ### Step 2: Single-Task Golden Run (Time: 12 minutes)
 ```bash
 # Run 1 task to completion (e.g., 1,000 steps on libero_spatial task 0)
-python scripts/train_zoo.py --max_steps 1000 --suite libero_spatial --task_id 0
+python scripts/train/train_zoo.py --max_steps 1000 --suite libero_spatial --task_id 0
 ```
 - **Verification criteria**:
   - Output checkpoint `checkpoints/model_zoo/task_libero_spatial_0.pt` exists and is non-empty.
@@ -440,7 +440,7 @@ conda activate vla_zoo
 export MUJOCO_GL=egl
 
 # 3. Launch full 40-task zoo
-python scripts/train_zoo.py \
+python scripts/train/train_zoo.py \
     --config configs/train_params.yaml \
     --tasks configs/libero_tasks.yaml \
     --output_dir checkpoints/model_zoo \

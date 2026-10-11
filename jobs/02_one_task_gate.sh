@@ -1,8 +1,8 @@
 #!/bin/bash
 # One-task learning gate: frozen Octo vs. rank-8 adapters on one LIBERO task.
 # Submit from the repository root after 01_render_check picks a backend, e.g.
-#   sbatch --export=ALL,RENDER=osmesa,STEPS=200,ROLLOUTS=5 jobs/02_one_task_gate.sh
-#   sbatch --export=ALL,RENDER=osmesa jobs/02_one_task_gate.sh
+#   sbatch --export=ALL,RENDER=mesa-egl,STEPS=200,ROLLOUTS=5 jobs/02_one_task_gate.sh
+#   sbatch --export=ALL,RENDER=mesa-egl jobs/02_one_task_gate.sh
 #SBATCH --job-name=m1_one_task_gate
 #SBATCH --account=research
 #SBATCH --partition=gpu_small
@@ -23,8 +23,7 @@ source $S/envs/vla/bin/activate
 export HF_HOME=$S/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export JAX_COMPILATION_CACHE_DIR=$S/jax_cache
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export MUJOCO_GL=${RENDER:?set RENDER=egl or RENDER=osmesa from 01_render_check}
-export PYOPENGL_PLATFORM=$MUJOCO_GL
+source jobs/render_env.sh
 
 SUITE=${SUITE:-libero_spatial}
 TASK=${TASK:-0}

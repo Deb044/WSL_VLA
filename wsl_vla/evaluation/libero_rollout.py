@@ -7,6 +7,7 @@ package or benchmark assets are unavailable.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -17,6 +18,27 @@ import numpy as np
 
 from ..data.octo_batches import _resize_rgb
 from ..experiments.provenance import sha256_array_tree
+
+
+@contextmanager
+def robosuite_import_environment():
+    """Hide a non-numeric CUDA_VISIBLE_DEVICES while robosuite is imported.
+
+    At import, robosuite asserts that MUJOCO_EGL_DEVICE_ID is a substring of
+    CUDA_VISIBLE_DEVICES. Slurm gives MIG slices a UUID there, and the EGL
+    device is Mesa's software renderer, so the two are unrelated. The variable
+    is restored afterwards because JAX needs it to find the GPU.
+    """
+
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    hide = visible is not None and not visible.replace(",", "").isdigit()
+    if hide:
+        del os.environ["CUDA_VISIBLE_DEVICES"]
+    try:
+        yield
+    finally:
+        if hide:
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible
 
 
 def canonical_instruction(value: str) -> str:
@@ -138,8 +160,9 @@ class LiberoRolloutEvaluator:
             raise ValueError("invalid LIBERO rollout dimensions or horizons")
         if benchmark_suite is None or env_factory is None or bddl_root is None:
             try:
-                from libero.libero import benchmark, get_libero_path
-                from libero.libero.envs import OffScreenRenderEnv
+                with robosuite_import_environment():
+                    from libero.libero import benchmark, get_libero_path
+                    from libero.libero.envs import OffScreenRenderEnv
             except ImportError as exc:  # pragma: no cover - WSL research environment
                 raise RuntimeError(
                     "official LIBERO is required for rollout evaluation"

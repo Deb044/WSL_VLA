@@ -17,6 +17,11 @@ import sys
 CHILD = r"""
 import json, os, sys, time
 import numpy as np
+# robosuite asserts at import that MUJOCO_EGL_DEVICE_ID is a substring of
+# CUDA_VISIBLE_DEVICES, which is a UUID on MIG slices. The probe needs no GPU.
+visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+if not visible.replace(",", "").isdigit():
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
@@ -38,7 +43,7 @@ step_s = (time.time() - t0) / steps
 images = {k: np.asarray(obs[k]) for k in ("agentview_image", "robot0_eye_in_hand_image")}
 env.close()
 from PIL import Image
-backend = os.environ["MUJOCO_GL"]
+backend = os.environ["RENDER_PROBE_NAME"]
 for key, image in images.items():
     Image.fromarray(image.astype(np.uint8)).save(os.path.join(out_dir, f"{backend}_{key}.png"))
 print("RESULT " + json.dumps({
@@ -52,8 +57,28 @@ print("RESULT " + json.dumps({
 """
 
 
+MESA_EGL_VENDOR = "/usr/share/glvnd/egl_vendor.d/50_mesa.json"
+
+
 def probe(backend: str, out_dir: Path, steps: int, timeout: int) -> dict:
-    env = dict(os.environ, MUJOCO_GL=backend, PYOPENGL_PLATFORM=backend)
+    env = dict(os.environ, RENDER_PROBE_NAME=backend)
+    env.pop("MUJOCO_EGL_DEVICE_ID", None)
+    if backend == "mesa-egl":
+        # Software EGL for MIG slices: skip the NVIDIA vendor and select the
+        # one Mesa device that initializes (its DRM cards come first and fail).
+        env.update(MUJOCO_GL="egl", PYOPENGL_PLATFORM="egl")
+        env["__EGL_VENDOR_LIBRARY_FILENAMES"] = os.environ.get("MESA_EGL_VENDOR", MESA_EGL_VENDOR)
+        finder = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("find_egl_device.py"))],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if finder.returncode != 0:
+            return {"backend": backend, "ok": False, "error": "no Mesa EGL device initializes"}
+        env["MUJOCO_EGL_DEVICE_ID"] = finder.stdout.strip()
+    else:
+        env.update(MUJOCO_GL=backend, PYOPENGL_PLATFORM=backend)
     try:
         completed = subprocess.run(
             [sys.executable, "-c", CHILD, str(out_dir), str(steps)],
@@ -65,6 +90,8 @@ def probe(backend: str, out_dir: Path, steps: int, timeout: int) -> dict:
     except subprocess.TimeoutExpired:
         return {"backend": backend, "ok": False, "error": f"timed out after {timeout} s"}
     result = {"backend": backend, "ok": False, "returncode": completed.returncode}
+    if "MUJOCO_EGL_DEVICE_ID" in env:
+        result["egl_device"] = int(env["MUJOCO_EGL_DEVICE_ID"])
     for line in completed.stdout.splitlines():
         if line.startswith("RESULT "):
             result.update(json.loads(line[len("RESULT "):]))
@@ -76,7 +103,7 @@ def probe(backend: str, out_dir: Path, steps: int, timeout: int) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backends", nargs="+", default=["egl", "osmesa"])
+    parser.add_argument("--backends", nargs="+", default=["egl", "mesa-egl", "osmesa"])
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--output-dir", required=True)

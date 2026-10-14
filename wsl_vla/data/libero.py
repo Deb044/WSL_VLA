@@ -31,6 +31,7 @@ class LiberoEpisode:
     episode_id: str
     actions: np.ndarray
     observations: Mapping[str, np.ndarray]
+    states: np.ndarray | None = None
 
 
 class StrictLiberoHDF5:
@@ -79,10 +80,49 @@ class StrictLiberoHDF5:
     def episode_ids(self) -> tuple[str, ...]:
         return self._episode_ids
 
-    def split(self, *, seed: int) -> EpisodeSplit:
-        return split_episodes(self.episode_ids, seed=seed)
+    @property
+    def image_convention(self) -> str:
+        """robosuite image convention the demonstrations were generated with.
 
-    def iter_episodes(self, episode_ids: tuple[str, ...] | None = None) -> Iterator[LiberoEpisode]:
+        LIBERO records it as ``data.attrs["macros_image_convention"]``; a file
+        without the attribute cannot be checked against the rollout renderer.
+        """
+
+        with h5py.File(self.path, "r") as handle:
+            value = handle["data"].attrs.get("macros_image_convention")
+        if value is None:
+            raise ValueError(
+                f"{self.path} does not record the image convention of its demonstrations"
+            )
+        return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+    def split(
+        self,
+        *,
+        seed: int,
+        train_fraction: float = 0.70,
+        validation_fraction: float = 0.15,
+    ) -> EpisodeSplit:
+        return split_episodes(
+            self.episode_ids,
+            seed=seed,
+            train_fraction=train_fraction,
+            validation_fraction=validation_fraction,
+        )
+
+    def iter_episodes(
+        self,
+        episode_ids: tuple[str, ...] | None = None,
+        *,
+        observation_keys: tuple[str, ...] | None = None,
+        include_states: bool = False,
+    ) -> Iterator[LiberoEpisode]:
+        """Yield complete episodes; ``observation_keys`` bounds host memory.
+
+        ``include_states`` additionally loads the recorded simulator states,
+        which the camera-orientation check replays in the benchmark.
+        """
+
         selected = episode_ids or self.episode_ids
         unknown = set(selected) - set(self.episode_ids)
         if unknown:
@@ -90,20 +130,32 @@ class StrictLiberoHDF5:
         with h5py.File(self.path, "r") as handle:
             for episode_id in selected:
                 demo = handle["data"][episode_id]
-                observations = {
-                    key: np.asarray(value)
-                    for key, value in demo["obs"].items()
-                }
-                for alias_k, candidates in PROPRIO_ALIASES.items():
-                    if alias_k not in observations:
-                        for cand in candidates:
-                            if cand in observations:
-                                observations[alias_k] = observations[cand]
-                                break
+                available = set(demo["obs"].keys())
+                if observation_keys is None:
+                    wanted = sorted(available)
+                else:
+                    missing = sorted(set(observation_keys) - available)
+                    if missing:
+                        raise ValueError(f"{episode_id} lacks observations {missing}")
+                    wanted = list(observation_keys)
+                observations = {key: np.asarray(demo["obs"][key]) for key in wanted}
+                if observation_keys is None:
+                    for alias_k, candidates in PROPRIO_ALIASES.items():
+                        if alias_k not in observations:
+                            for cand in candidates:
+                                if cand in observations:
+                                    observations[alias_k] = observations[cand]
+                                    break
+                states = None
+                if include_states:
+                    if "states" not in demo:
+                        raise ValueError(f"{episode_id} stores no simulator states")
+                    states = np.asarray(demo["states"])
                 yield LiberoEpisode(
                     episode_id=episode_id,
                     actions=np.asarray(demo["actions"], dtype=np.float32),
                     observations=observations,
+                    states=states,
                 )
 
 

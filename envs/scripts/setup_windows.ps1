@@ -1,8 +1,10 @@
 # ==============================================================================
-# Environment Installation & Setup Script for Windows (PowerShell)
+# `legacy-smoke` profile on Windows (PowerShell): PyTorch smoke-test environment
 # ==============================================================================
+# Not a research environment. The Octo-Small research profiles are created
+# under Linux/WSL2 with envs/scripts/setup_research.sh.
 $ErrorActionPreference = "Stop"
-$ENV_NAME = "vla_zoo"
+$ENV_NAME = if ($env:ENV_NAME) { $env:ENV_NAME } else { "vla_legacy_smoke" }
 
 Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host " Step 1: Checking Conda Environment ($ENV_NAME)" -ForegroundColor Cyan
@@ -27,8 +29,8 @@ conda run -n $ENV_NAME python -m pip install --upgrade pip setuptools wheel
 Write-Host "  -> Installing PyTorch..." -ForegroundColor Yellow
 conda run -n $ENV_NAME python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-Write-Host "  -> Installing requirements from envs/requirements/base.txt..." -ForegroundColor Yellow
-conda run -n $ENV_NAME python -m pip install -r "$PSScriptRoot/../requirements/base.txt"
+Write-Host "  -> Installing requirements from envs/requirements/legacy-smoke.txt..." -ForegroundColor Yellow
+conda run -n $ENV_NAME python -m pip install -r "$PSScriptRoot/../requirements/legacy-smoke.txt"
 
 Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host " Step 3: Running Pre-Flight Dry Run Verification" -ForegroundColor Cyan

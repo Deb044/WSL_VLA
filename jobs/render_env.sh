@@ -14,4 +14,8 @@ case "${RENDER:?set RENDER=egl, mesa-egl or osmesa from 01_render_check}" in
     export MUJOCO_EGL_DEVICE_ID ;;
   *) echo "unknown RENDER=$RENDER" >&2; exit 1 ;;
 esac
-echo "RENDER=$RENDER MUJOCO_GL=$MUJOCO_GL MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID:-unset}"
+# Software rendering threads per simulator process. For LIBERO's two 128x128
+# cameras, 2 threads were 1.3x faster than 1 and more gave nothing (measured
+# with Mesa llvmpipe), while several rollout processes share a slice's CPUs.
+export LP_NUM_THREADS=${LP_NUM_THREADS:-2}
+echo "RENDER=$RENDER MUJOCO_GL=$MUJOCO_GL MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID:-unset} LP_NUM_THREADS=$LP_NUM_THREADS"

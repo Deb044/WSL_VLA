@@ -1,0 +1,95 @@
+# Run profile 6: full protocol.
+#
+# 40 tasks x 3 seeds = 120 independent runs, three snapshots each = 360 adapter
+# samples; four leave-one-suite-out folds; three alignment seeds. Source task
+# indices 8 and 9 remain validation tasks. The zoo budget below is the pilot's
+# starting value: replace it with the budget frozen after the pilot and set
+# ``frozen: true`` before launching this profile.
+schema_version: 1
+name: full
+profile: full
+publication_evidence: true
+description: Full leave-one-suite-out protocol (360 adapter samples).
+
+tasks:
+  libero_spatial: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  libero_object: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  libero_goal: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  libero_10: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+seeds: [17, 42, 73]
+
+zoo:
+  optimizer_updates: 5000
+  # Effective batch 16, as in the pilot (see the note there); copy the pilot's
+  # frozen value.
+  micro_batch_size: 8
+  gradient_accumulation_steps: 2
+  learning_rate: 3.0e-4
+  snapshot_updates: [4000, 4500, 5000]
+  held_out_loss_every: 500
+  held_out_loss_batches: 32
+  frozen: false
+
+episode_split:
+  seed: 20260929
+  train_fraction: 0.70
+  validation_fraction: 0.15
+
+evidence:
+  frames_per_episode: 4
+  action_chunk_length: 16
+
+folds:
+  - name: holdout_libero_spatial
+    held_out_suite: libero_spatial
+    train_tasks: {libero_object: [0, 1, 2, 3, 4, 5, 6, 7], libero_goal: [0, 1, 2, 3, 4, 5, 6, 7], libero_10: [0, 1, 2, 3, 4, 5, 6, 7]}
+    validation_tasks: {libero_object: [8, 9], libero_goal: [8, 9], libero_10: [8, 9]}
+    held_out_tasks: {libero_spatial: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
+    selection: validation_tasks
+  - name: holdout_libero_object
+    held_out_suite: libero_object
+    train_tasks: {libero_spatial: [0, 1, 2, 3, 4, 5, 6, 7], libero_goal: [0, 1, 2, 3, 4, 5, 6, 7], libero_10: [0, 1, 2, 3, 4, 5, 6, 7]}
+    validation_tasks: {libero_spatial: [8, 9], libero_goal: [8, 9], libero_10: [8, 9]}
+    held_out_tasks: {libero_object: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
+    selection: validation_tasks
+  - name: holdout_libero_goal
+    held_out_suite: libero_goal
+    train_tasks: {libero_spatial: [0, 1, 2, 3, 4, 5, 6, 7], libero_object: [0, 1, 2, 3, 4, 5, 6, 7], libero_10: [0, 1, 2, 3, 4, 5, 6, 7]}
+    validation_tasks: {libero_spatial: [8, 9], libero_object: [8, 9], libero_10: [8, 9]}
+    held_out_tasks: {libero_goal: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
+    selection: validation_tasks
+  - name: holdout_libero_10
+    held_out_suite: libero_10
+    train_tasks: {libero_spatial: [0, 1, 2, 3, 4, 5, 6, 7], libero_object: [0, 1, 2, 3, 4, 5, 6, 7], libero_goal: [0, 1, 2, 3, 4, 5, 6, 7]}
+    validation_tasks: {libero_spatial: [8, 9], libero_object: [8, 9], libero_goal: [8, 9]}
+    held_out_tasks: {libero_10: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
+    selection: validation_tasks
+
+alignment:
+  seeds: [0, 1, 2]
+  conditions: [aligned, reconstruction_only]
+  tasks_per_batch: 6
+  samples_per_task: 2
+  optimizer_updates: 20000
+  validation_every: 250
+
+rollouts:
+  development: 20
+  final: 50
+  seed: 17
+  zoo_reference_seed: 17
+
+expected:
+  independent_runs: 120
+  adapter_samples: 360
+  folds:
+    holdout_libero_spatial: &full_fold
+      train_tasks: 24
+      train_samples: 216
+      validation_tasks: 6
+      validation_samples: 54
+      held_out_tasks: 10
+      held_out_samples: 90
+    holdout_libero_object: *full_fold
+    holdout_libero_goal: *full_fold
+    holdout_libero_10: *full_fold

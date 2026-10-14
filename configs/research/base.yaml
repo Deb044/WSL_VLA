@@ -1,19 +1,21 @@
-schema_version: 1
+schema_version: 2
 run_tier: development
 
 model:
   id: rail-berkeley/octo-small-1.5
   revision: dc9aa3019f764726c770814b27e4ab0fc6e32a58
-  # Patched JAX 0.7 port of upstream 241fb3514b7c40957a86d869fecb7c7fc353f540.
+  # blackwell profile: patched JAX 0.7 port of upstream 241fb3514b7c40957a86d869fecb7c7fc353f540.
+  # legacy-gpu profile: that upstream revision, unmodified (see wsl_vla/octo/compat.py).
   octo_git_revision: a4cc964b7e77f8d8b19f533a0dfa95d653501ab7
+  octo_upstream_revision: 241fb3514b7c40957a86d869fecb7c7fc353f540
   require_sha256: true
   precision: float32
 
 simulator:
   id: Lifelong-Robot-Learning/LIBERO
   git_revision: 8f1084e3132a39270c3a13ebe37270a43ece2a01
-  camera_height: 256
-  camera_width: 256
+  # Cameras render at preprocessing.source_camera_*; there is no separate
+  # simulator resolution that could drift from the demonstrations.
   warmup_steps: 5
   max_episode_steps: 600
 
@@ -22,42 +24,84 @@ adapter:
   alpha: 16.0
   dropout: 0.0
   token_width: 384
+  sequence_window: 128
+  placement: pre_block_residual
   components: [vision, language, action]
   store_effective_updates: true
+
+# One preprocessing identity for training batches, evidence, and rollouts
+# (wsl_vla/data/preprocessing.py). Changing any value changes the
+# preprocessing hash and therefore invalidates the zoo.
+preprocessing:
+  # LIBERO demonstrations store 128x128 frames; rollouts render at the same
+  # resolution and both go through the identical bilinear resize.
+  source_camera_height: 128
+  source_camera_width: 128
+  # Recorded in every LIBERO file as data.attrs.macros_image_convention.
+  # "opengl" stores image rows bottom-up (vertically flipped frames).
+  demonstration_image_convention: opengl
+  # Present upright frames to the frozen, upright-pretrained image tokenizer.
+  # Use "identity" to feed frames exactly as stored.
+  image_transform: flip_vertical
+  # Transform from a simulator frame to the demonstration storage orientation.
+  # "identity" requires the simulator to render with the convention above;
+  # scripts/setup/verify_camera_orientation.py measures it.
+  simulator_alignment: identity
+  # Octo predicts a 4-step chunk; this many are executed before re-planning.
+  executed_actions_per_plan: 1
+
+# Fixed policy-action coordinates for every zoo task (wsl_vla/contracts.py):
+# identity normalization in OSC_POSE controller coordinates, bounds [-1, 1],
+# gripper -1 = open / +1 = close. Targets are validated, never clipped.
+action_convention: libero_osc_pose_delta_v1
 
 data:
   root: data/libero
   task_order_config: configs/reference_tasks.yaml
   require_real_data: true
   synthetic_smoke_test: false
+  # Episode splits of the zoo/alignment experiments come from the experiment
+  # manifest (configs/research/manifests). The values below serve the
+  # continual-learning runners only and must match the manifest they follow.
   split_seed: 20260929
   episode_split: [0.70, 0.15, 0.15]
   require_wrist_camera: true
-  proprio_keys: [robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos]
+  # octo-small-1.5 has no proprioception tokenizer, so no proprio is required
+  # or claimed; see ResearchOctoBundle.identity()["proprio_consumed"].
+  proprio_keys: []
 
-population:
-  seeds: [17, 42, 73]
-  late_checkpoint_count: 3
-  late_checkpoint_fractions: [0.80, 0.90, 1.00]
-
+# Alignment *model and optimizer* settings. Task selections, seeds, batch
+# composition, update budgets, and folds come from the experiment manifest.
+# Every key is required: there are no architecture defaults in code, and
+# command-line overrides take precedence over these values.
 alignment:
   latent_dim: 128
   transformer_width: 256
-  transformer_layers: 3
+  encoder_layers: 3
+  decoder_layers: 3
   attention_heads: 4
-  temperature: 0.07
-  tasks_per_batch: 2
-  samples_per_task: 2
-  gradient_accumulation_steps: 8
-  early_stopping_patience: 20
+  mlp_ratio: 4
+  evidence_hidden_dim: 256
+  initial_temperature: 0.07
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-4
+  gradient_clip_norm: 1.0
+  # Optimizer-step accumulation only. It does not add contrastive negatives:
+  # the negative set is always the tasks inside one micro-batch.
+  gradient_accumulation_steps: 1
   reconstruction_weight: 1.0
+  contrastive_weight: 1.0
   auxiliary_classification_weight: 1.0
   modality_alignment_weights:
     vision: 1.0
     language: 1.0
     action: 1.0
-  multi_positive_task_labels: true
-  mapper: linear_ridge
+  # Floor of the training-only per-entry RMS scale used to normalize targets.
+  rms_floor: 1.0e-6
+  # Sequence windows per rematerialized chunk in the autoencoder (0 = all at
+  # once). It trades recomputation for memory and never changes results.
+  window_chunk: 64
+  mapper: dual_ridge
   ridge_alpha_candidates: [0.001, 0.01, 0.1, 1.0, 10.0]
 
 continual_learning:

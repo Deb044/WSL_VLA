@@ -1,0 +1,27 @@
+# LIBERO simulator stack for rollout evaluation (shared by both research
+# profiles and by envs/scripts/add_simulator_overlay.sh).
+#
+# robosuite itself is installed separately with --no-deps:
+#   pip install --no-deps robosuite==1.4.0
+# because its metadata pulls in pynput (keyboard teleoperation), whose evdev
+# dependency needs a compiler and kernel headers and is never used here. The
+# packages below are what robosuite and LIBERO import at runtime.
+#
+# LIBERO is an editable checkout of commit
+# 8f1084e3132a39270c3a13ebe37270a43ece2a01 (its top-level package has no
+# __init__.py, so a regular install is not importable).
+#
+# LIBERO also imports torch (its benchmark module reads the fixed initial
+# states with torch.load). Both research profiles already provide a CPU-capable
+# torch, so it is checked by the overlay script rather than installed here.
+mujoco==2.3.7
+numba==0.60.0
+llvmlite==0.43.0
+termcolor==2.5.0
+bddl==1.0.1
+easydict==1.9
+gym==0.25.2
+future==1.0.0
+cloudpickle==3.1.2
+opencv-python==4.11.0.86
+matplotlib==3.9.4

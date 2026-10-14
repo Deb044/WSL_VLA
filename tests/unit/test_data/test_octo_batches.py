@@ -1,8 +1,9 @@
 import numpy as np
+import pytest
 
+from tests.fakes import FakeTextProcessor, episode, episodes, example_batch, preprocessing_spec
 from wsl_vla.data.libero import LiberoEpisode
 from wsl_vla.data.octo_batches import (
-    ActionNormalization,
     collate_octo_examples,
     conform_batch_to_octo_example,
     iter_octo_examples,
@@ -10,69 +11,82 @@ from wsl_vla.data.octo_batches import (
 
 
 def test_octo_windows_preserve_episode_boundaries_and_action_masks():
-    observations = {
-        "agentview_rgb": np.zeros((3, 4, 4, 3), dtype=np.uint8),
-        "eye_in_hand_rgb": np.ones((3, 4, 4, 3), dtype=np.uint8),
-        "robot0_eef_pos": np.zeros((3, 3), dtype=np.float32),
-        "robot0_eef_quat": np.zeros((3, 4), dtype=np.float32),
-        "robot0_gripper_qpos": np.zeros((3, 2), dtype=np.float32),
-    }
-    first = LiberoEpisode("demo_0", np.array([[0.0], [1.0], [2.0]], dtype=np.float32), observations)
-    second = LiberoEpisode("demo_1", np.array([[10.0], [11.0], [12.0]], dtype=np.float32), observations)
-    normalization = ActionNormalization.fit((first, second))
-    np.testing.assert_allclose(
-        normalization.denormalize(normalization.normalize(first.actions)), first.actions
-    )
+    spec = preprocessing_spec()
+    example = example_batch(spec)
+    first = episode(0, length=3)
     examples = list(
         iter_octo_examples(
             (first,),
             language_instruction="do the task",
-            normalization=normalization,
-            window_size=2,
-            action_horizon=2,
-            image_size=(4, 4),
+            spec=spec,
+            example_observation=example["observation"],
         )
     )
+    assert len(examples) == 3
+    # The first window has one real frame, left-padded and masked.
     assert examples[0]["observation"]["timestep_pad_mask"].tolist() == [False, True]
-    assert examples[-1]["action_pad_mask"][-1, :, 0].tolist() == [True, False]
-    batch = collate_octo_examples(examples[:2])
-    assert batch["action"].shape == (2, 2, 2, 1)
+    assert examples[0]["observation"]["pad_mask_dict"]["image_primary"].tolist() == [False, True]
+    assert not examples[0]["observation"]["image_primary"][0].any()
+    # The last step can only supervise the single action that still exists.
+    assert examples[-1]["action_pad_mask"][-1, :, 0].tolist() == [True, False, False]
+    np.testing.assert_array_equal(examples[-1]["action"][-1, 0], first.actions[-1])
+    batch = collate_octo_examples(
+        examples[:2], text_processor=FakeTextProcessor(), example_task=example["task"]
+    )
+    assert batch["action"].shape == (2, 2, 3, 7)
+    assert batch["task"]["pad_mask_dict"]["language_instruction"].tolist() == [True, True]
+    assert batch["task"]["pad_mask_dict"]["image_primary"].tolist() == [False, False]
+    conform_batch_to_octo_example(batch, example)
 
 
-def test_conform_batch_drops_only_checkpoint_unsupported_observations():
-    batch = {
-        "observation": {
-            "image_primary": np.zeros((2, 1, 4, 4, 3), dtype=np.uint8),
-            "timestep_pad_mask": np.ones((2, 1), dtype=bool),
-            "proprio": np.zeros((2, 1, 8), dtype=np.float32),
-        },
-        "task": {"language_instruction": np.zeros((2, 4), dtype=np.int32)},
-        "action": np.zeros((2, 1, 2, 7), dtype=np.float32),
-        "action_pad_mask": np.ones((2, 1, 2, 7), dtype=bool),
+def test_targets_stay_in_controller_coordinates_and_are_never_rescaled():
+    spec = preprocessing_spec()
+    example = example_batch(spec)
+    first = episode(1, length=5)
+    examples = list(
+        iter_octo_examples(
+            (first,), language_instruction="go", spec=spec, example_observation=example["observation"]
+        )
+    )
+    for timestep, item in enumerate(examples):
+        np.testing.assert_array_equal(item["action"][-1, 0], first.actions[timestep])
+
+
+def test_out_of_bounds_training_targets_are_rejected_not_clipped():
+    spec = preprocessing_spec()
+    example = example_batch(spec)
+    bad = episode(0, length=4)
+    actions = bad.actions.copy()
+    actions[2, 0] = 1.5
+    with pytest.raises(ValueError, match="never clipped silently"):
+        list(
+            iter_octo_examples(
+                (LiberoEpisode(bad.episode_id, actions, bad.observations),),
+                language_instruction="go",
+                spec=spec,
+                example_observation=example["observation"],
+            )
+        )
+
+
+def test_conform_batch_fails_closed_on_extra_or_missing_checkpoint_inputs():
+    spec = preprocessing_spec()
+    example = example_batch(spec)
+    examples = list(
+        iter_octo_examples(
+            episodes(1), language_instruction="go", spec=spec,
+            example_observation=example["observation"],
+        )
+    )
+    batch = collate_octo_examples(
+        examples[:2], text_processor=FakeTextProcessor(), example_task=example["task"]
+    )
+    extra = {**batch, "observation": {**batch["observation"], "proprio": np.zeros((2, 2, 8))}}
+    with pytest.raises(ValueError, match="keys differ from the checkpoint"):
+        conform_batch_to_octo_example(extra, example)
+    missing = {
+        **batch,
+        "observation": {k: v for k, v in batch["observation"].items() if k != "image_wrist"},
     }
-    example = {
-        "observation": {
-            "image_primary": np.zeros((1, 1, 4, 4, 3), dtype=np.uint8),
-            "timestep_pad_mask": np.ones((1, 1), dtype=bool),
-        },
-        "task": {"language_instruction": np.zeros((1, 4), dtype=np.int32)},
-        "action": np.zeros((1, 1, 2, 7), dtype=np.float32),
-    }
-    conformed = conform_batch_to_octo_example(batch, example)
-    assert set(conformed["observation"]) == {"image_primary", "timestep_pad_mask"}
-    assert "proprio" not in conformed["observation"]
-
-
-def test_action_normalization_tolerates_a_constant_dimension():
-    observations = {}
-    varying = np.array([[0.0, 1.0], [2.0, 3.0], [4.0, 7.0]], dtype=np.float32)
-    constant = np.full((3, 1), -1.0, dtype=np.float32)
-    episode = LiberoEpisode("demo_0", np.concatenate([varying, constant], axis=1), observations)
-    normalization = ActionNormalization.fit((episode,))
-    reference = ActionNormalization.fit((LiberoEpisode("demo_0", varying, observations),))
-    assert normalization.std[-1] == 1.0
-    np.testing.assert_array_equal(normalization.mean[:2], reference.mean)
-    np.testing.assert_array_equal(normalization.std[:2], reference.std)
-    normalized = normalization.normalize(episode.actions)
-    np.testing.assert_array_equal(normalized[:, -1], 0.0)
-    np.testing.assert_allclose(normalization.denormalize(normalized), episode.actions, atol=1e-6)
+    with pytest.raises(ValueError, match="keys differ from the checkpoint"):
+        conform_batch_to_octo_example(missing, example)

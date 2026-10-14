@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# macOS Setup Script for VLA Model Zoo (Apple Silicon M1/M2/M3/M4 & Intel Mac)
+# `legacy-smoke` profile on macOS (Apple Silicon M1/M2/M3/M4 & Intel Mac)
 # ==============================================================================
+# PyTorch smoke-test environment only. The Octo-Small research profiles
+# (envs/scripts/setup_research.sh) target Linux with an NVIDIA GPU.
 set -euo pipefail
 
-ENV_NAME="vla_zoo"
+ENV_NAME="${ENV_NAME:-vla_legacy_smoke}"
 
 echo "======================================================================"
 echo " Setting up VLA Model Zoo on macOS"
@@ -46,7 +48,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 echo "  -> Upgrading pip & installing dependencies..."
 pip install --upgrade pip setuptools wheel
 pip install torch torchvision
-pip install -r "$REPO_ROOT/envs/requirements/base.txt"
+pip install -r "$REPO_ROOT/envs/requirements/legacy-smoke.txt"
 
 # 5. Verification Check (Testing Apple Silicon MPS backend)
 echo "======================================================================"

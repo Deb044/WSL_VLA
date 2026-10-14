@@ -11,7 +11,7 @@ from ..adapters.latent import effective_updates_to_state, unpack_effective_token
 from ..alignment.checkpoint import decode_alignment_latents, refine_alignment_latents
 from ..contracts import AdapterSpec, AlignmentCheckpoint
 from ..experiments.provenance import sha256_array_tree
-from .training import adapter_value_and_grad
+from .training import octo_diffusion_loss
 
 
 def _jax_imports():
@@ -114,10 +114,16 @@ def train_shared_lora_stage(
     )
     optimizer_state = optimizer.init(adapter_state)
 
+    base_params = bundle.research_model.params
+
     @jax.jit
-    def step_fn(state, opt_state, batch, key):
-        (loss_and_metrics, gradients) = adapter_value_and_grad(bundle, state, batch, key)
-        loss, _ = loss_and_metrics
+    def step_fn(base, state, opt_state, batch, key):
+        (loss, _), gradients = jax.value_and_grad(
+            lambda value: octo_diffusion_loss(
+                bundle, value, batch, key, train=True, base_params=base
+            ),
+            has_aux=True,
+        )(state)
         updates, next_opt_state = optimizer.update(gradients, opt_state, state)
         return optax.apply_updates(state, updates), next_opt_state, loss
 
@@ -144,7 +150,7 @@ def train_shared_lora_stage(
         batch = next(iterator)
         key, step_key = jax.random.split(key)
         adapter_state, optimizer_state, final_loss = step_fn(
-            adapter_state, optimizer_state, batch, step_key
+            base_params, adapter_state, optimizer_state, batch, step_key
         )
         micro_steps += 1
         if micro_steps % gradient_accumulation_steps == 0:

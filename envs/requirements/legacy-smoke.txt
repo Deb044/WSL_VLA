@@ -1,0 +1,36 @@
+# `legacy-smoke` profile: the original PyTorch smoke-test pipeline
+# (scripts/train/train_zoo.py, train_alignment.py, sequential_adaptation.py,
+# scripts/eval/evaluate_vla.py, ...). It exercises plumbing on synthetic or toy
+# data and is NOT a research environment: no result produced with it is used by
+# the Octo-Small zoo and alignment experiments, which need one of the locked
+# research profiles (research-blackwell.txt, research-legacy-gpu.txt).
+#
+# Install with envs/scripts/setup_legacy_smoke.sh. Versions are lower bounds,
+# as they always were for this profile.
+
+# Core Deep Learning Framework
+torch>=2.2.0
+torchvision>=0.17.0
+
+# VLA Architecture & LoRA Adaptation
+transformers>=4.40.0
+peft>=0.10.0
+accelerate>=0.28.0
+
+# Data, Configs & Array Operations
+h5py>=3.10.0
+pyyaml>=6.0.1
+einops>=0.7.0
+tqdm>=4.66.0
+
+# Task Evidence & Text Embeddings
+sentence-transformers>=2.6.0
+
+# Experiment Tracking
+wandb>=0.16.0
+
+# Robotics Simulation & Headless Rendering
+mujoco>=3.1.0
+gymnasium>=0.29.0
+PyOpenGL>=3.1.7
+PyOpenGL_accelerate>=3.1.7

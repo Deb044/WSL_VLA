@@ -37,11 +37,44 @@ def get_hf_token(token_arg: Optional[str] = None) -> Optional[str]:
     return None
 
 
+def task_file_slug(instruction: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9]+", "_", instruction.lower()).strip("_") + "_demo.hdf5"
+
+
+def select_task_files(suite_name: str, suite_files: List[str], task_indices: List[int],
+                      tasks_yaml: str = "configs/reference_tasks.yaml") -> List[str]:
+    """Resolve protocol task indices to repository files (never by alphabetical order)."""
+
+    from pathlib import Path
+
+    yaml_path = Path(tasks_yaml)
+    if not yaml_path.is_file():
+        yaml_path = Path(__file__).resolve().parents[2] / tasks_yaml
+    with open(yaml_path, encoding="utf-8") as f:
+        instructions = yaml.safe_load(f)["suites"][suite_name]
+    selected = []
+    for index in task_indices:
+        if not 0 <= index < len(instructions):
+            raise ValueError(f"{suite_name} has no task index {index}")
+        slug = task_file_slug(instructions[index])
+        matches = [
+            f for f in suite_files
+            if os.path.basename(f) == slug or os.path.basename(f).endswith("_" + slug)
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"{suite_name} task {index} matches {len(matches)} repository files")
+        selected.append(matches[0])
+    return selected
+
+
 def download_suite(
     suite_name: str,
     dest_dir: str = "./data/libero",
     max_tasks: Optional[int] = None,
     token: Optional[str] = None,
+    task_indices: Optional[List[int]] = None,
 ):
     target_suite_dir = os.path.join(dest_dir, suite_name)
     os.makedirs(target_suite_dir, exist_ok=True)
@@ -66,7 +99,10 @@ def download_suite(
         ])
 
     print(f"  Found {len(suite_files)} task demonstration file(s) for '{suite_name}'.")
-    if max_tasks is not None:
+    if task_indices is not None:
+        suite_files = select_task_files(suite_name, suite_files, task_indices)
+        print(f"  [Task Selection] Protocol task indices {task_indices}.")
+    elif max_tasks is not None:
         suite_files = suite_files[:max_tasks]
         print(f"  [Task Limit] Restricting to first {max_tasks} task(s).")
 
@@ -152,7 +188,11 @@ def main():
         help="LIBERO suite to download or 'all'",
     )
     parser.add_argument("--dest", type=str, default="./data/libero", help="Destination directory for datasets")
-    parser.add_argument("--max_tasks", type=int, default=None, help="Maximum number of tasks to download per suite")
+    parser.add_argument("--max_tasks", type=int, default=None, help="Maximum number of tasks to download per suite (alphabetical file order; prefer --task-indices)")
+    parser.add_argument("--task-indices", type=str, default=None,
+                        help="Comma-separated protocol task indices (configs/reference_tasks.yaml order), e.g. 0,1,8")
+    parser.add_argument("--manifest", type=str, default=None,
+                        help="Experiment manifest: download exactly the tasks it names (overrides --suite/--task-indices)")
     parser.add_argument("--token", type=str, default=None, help="Hugging Face API token (or set HF_TOKEN env var)")
     args = parser.parse_args()
 
@@ -162,6 +202,14 @@ def main():
     else:
         print("  [Notice] Running unauthenticated. Provide --token or set HF_TOKEN to avoid rate limits.")
 
+    if args.manifest:
+        with open(args.manifest, encoding="utf-8") as f:
+            selection = yaml.safe_load(f)["tasks"]
+        for s, indices in selection.items():
+            download_suite(suite_name=s, dest_dir=args.dest, token=token,
+                           task_indices=[int(i) for i in indices])
+        return
+    indices = None if args.task_indices is None else [int(i) for i in args.task_indices.split(",")]
     suites_to_download = ALL_SUITES if args.suite == "all" else [args.suite]
     for s in suites_to_download:
         download_suite(
@@ -169,6 +217,7 @@ def main():
             dest_dir=args.dest,
             max_tasks=args.max_tasks,
             token=token,
+            task_indices=indices,
         )
 
 

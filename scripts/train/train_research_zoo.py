@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Train one official Octo-Small model-zoo run and save three late adapters."""
+"""Train one independent Octo-Small zoo run (one task, one seed) from the shared base.
+
+Task, seed, optimizer-update budget, snapshot stages, and the episode split all
+come from the experiment manifest. The run is resumable: optimizer state,
+random-generator counters, and the dataset cursor are saved separately from the
+compact adapter snapshots, and a resume is refused unless the configuration and
+data hashes match.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-import shutil
 import sys
-from time import perf_counter
-
-import numpy as np
 
 def _find_repo_root() -> Path:
     for p in Path(__file__).resolve().parents:
@@ -21,308 +24,230 @@ def _find_repo_root() -> Path:
 REPO_ROOT = _find_repo_root()
 sys.path.insert(0, str(REPO_ROOT))
 
-from wsl_vla.adapters.packing import (
-    PackedAdapterMetadata,
-    pack_low_rank_adapter,
-    save_packed_adapter,
-)
-from wsl_vla.alignment.evidence_io import load_task_evidence
-from wsl_vla.data.libero import StrictLiberoHDF5, load_suite_manifest
-from wsl_vla.data.octo_batches import (
-    ActionNormalization,
-    collate_octo_examples,
-    conform_batch_to_octo_example,
-    iter_octo_examples,
+from wsl_vla.data.streams import load_split_episodes, task_stream_from_bundle
+from wsl_vla.experiments.manifest import task_id as make_task_id
+from wsl_vla.experiments.provenance import git_state, sha256_file
+from wsl_vla.experiments.runtime import (
+    add_experiment_arguments,
+    environment_record,
+    input_hashes,
+    load_experiment,
+    require_gpu_runtime_settings,
+    task_data_file,
 )
 from wsl_vla.octo.bridge import (
+    assert_base_parameters_unchanged,
     assert_zero_adapter_equivalence,
     build_adapter_spec_and_factors,
-    load_research_octo,
+    load_research_octo_from_config,
 )
-from wsl_vla.octo.training import adapter_value_and_grad, initial_adapter_state
-from wsl_vla.experiments.protocol import (
-    load_yaml,
-    validate_reference_tasks,
-    validate_research_config,
-)
-from wsl_vla.experiments.provenance import sha256_file
-
-
-def _epoch_batches(
-    episodes,
-    *,
-    instruction,
-    normalization,
-    window_size,
-    action_horizon,
-    image_size,
-    batch_size,
-    rng,
-    text_processor,
-    example_batch,
-):
-    """Stream one shuffled epoch without materializing all image windows."""
-
-    order = np.arange(len(episodes))
-    rng.shuffle(order)
-    pending = []
-    for episode_index in order:
-        examples = list(
-            iter_octo_examples(
-                (episodes[int(episode_index)],),
-                language_instruction=instruction,
-                normalization=normalization,
-                window_size=window_size,
-                action_horizon=action_horizon,
-                image_size=image_size,
-                include_wrist=True,
-            )
-        )
-        rng.shuffle(examples)
-        for example in examples:
-            pending.append(example)
-            if len(pending) == batch_size:
-                batch = collate_octo_examples(pending, text_processor=text_processor)
-                yield conform_batch_to_octo_example(batch, example_batch)
-                pending = []
-    if pending:
-        batch = collate_octo_examples(pending, text_processor=text_processor)
-        yield conform_batch_to_octo_example(batch, example_batch)
-
-
-def _save_population_checkpoint(
-    *,
-    output_root: Path,
-    suite: str,
-    task_index: int,
-    seed: int,
-    step: int,
-    fraction: float,
-    bundle,
-    adapter_state,
-    token_width: int,
-    evidence_path: Path,
-    data_sha256: str,
-    split: str,
-):
-    import jax
-
-    task_id = f"{suite}_{task_index}"
-    sample_dir = output_root / suite / task_id / f"seed_{seed}" / f"step_{step}"
-    sample_dir.mkdir(parents=True, exist_ok=False)
-    spec, factors = build_adapter_spec_and_factors(
-        bundle,
-        token_width=token_width,
-        adapter_state=jax.device_get(adapter_state),
-    )
-    first_factor = next(iter(factors.values()))[0]
-    packed = pack_low_rank_adapter(
-        spec,
-        factors,
-        metadata=PackedAdapterMetadata(
-            task_id=task_id,
-            suite=suite,
-            seed=seed,
-            checkpoint_stage=step,
-            checkpoint_fraction=fraction,
-            source_dtype=str(np.asarray(first_factor).dtype),
-        ),
-    )
-    adapter_path = sample_dir / "adapter.npz"
-    save_packed_adapter(packed, adapter_path)
-    shutil.copy2(evidence_path, sample_dir / "evidence.npz")
-    evidence_manifest = evidence_path.with_suffix(".manifest.json")
-    if evidence_manifest.is_file():
-        shutil.copy2(evidence_manifest, sample_dir / "evidence.manifest.json")
-    metadata = {
-        "schema_version": 1,
-        "synthetic": False,
-        "task_id": task_id,
-        "suite": suite,
-        "task_index": task_index,
-        "seed": seed,
-        "checkpoint_stage": step,
-        "checkpoint_fraction": fraction,
-        "split": split,
-        "base_sha256": bundle.base_sha256,
-        "base_revision": bundle.base_revision,
-        "dataset_sha256": data_sha256,
-        "adapter_sha256": sha256_file(adapter_path),
-        "evidence_sha256": sha256_file(sample_dir / "evidence.npz"),
-    }
-    (sample_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return sample_dir, metadata
+from wsl_vla.octo.training import assert_adapter_gradient_reachability
+from wsl_vla.octo.zoo import ZooRunIdentity, ZooTrainer, atomic_write_json
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    add_experiment_arguments(parser)
     parser.add_argument("--suite", required=True)
     parser.add_argument("--task-index", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--evidence", required=True)
-    parser.add_argument("--config", default="configs/research/base.yaml")
-    parser.add_argument("--tasks", default="configs/reference_tasks.yaml")
     parser.add_argument("--data-root")
-    parser.add_argument("--checkpoint", default="hf://rail-berkeley/octo-small-1.5")
-    parser.add_argument("--output-root", default="research_results/population")
-    parser.add_argument("--steps", type=int)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--batch-size", type=int)
+    parser.add_argument(
+        "--budget-inspection",
+        action="store_true",
+        help="Train a manifest inspection task to the largest inspection stage and save "
+        "inspection snapshots outside the zoo population (budget validation).",
+    )
+    parser.add_argument("--resume-every", type=int, default=100)
+    parser.add_argument("--log-every", type=int, default=100)
     args = parser.parse_args()
+    if args.resume_every <= 0 or args.log_every <= 0:
+        raise ValueError("resume and log cadences must be positive")
+    require_gpu_runtime_settings()
+
+    config, tasks, manifest, paths = load_experiment(args)
+    identifier = make_task_id(args.suite, args.task_index)
+    if identifier not in manifest.tasks:
+        raise ValueError(f"{identifier} is not a task of experiment {manifest.name!r}")
+    if args.seed not in manifest.seeds:
+        raise ValueError(f"seed {args.seed} is not a zoo seed of experiment {manifest.name!r}")
+    if args.budget_inspection:
+        if identifier not in manifest.zoo.inspection_tasks:
+            raise ValueError(
+                f"{identifier} is not a budget-inspection source task of {manifest.name!r}"
+            )
+        stages = manifest.zoo.inspection_updates
+        purpose = "budget_inspection"
+        output_root = paths.budget_inspection
+        resume_root = paths.resume / "budget_inspection"
+    else:
+        stages = manifest.zoo.snapshot_updates
+        purpose = "zoo"
+        output_root = paths.population
+        resume_root = paths.resume / "zoo"
+    relative = Path(args.suite) / identifier / f"seed_{args.seed}"
+    run_directory = output_root / relative
+    resume_directory = resume_root / relative
+    summary_path = run_directory / "run.json"
+
+    environment = environment_record()
+    data_file, instruction = task_data_file(
+        args.data_root or config["data"]["root"], tasks, identifier
+    )
+    dataset_sha256 = sha256_file(data_file)
+    bundle = load_research_octo_from_config(config, args.checkpoint, seed=args.seed)
+    equivalence = assert_zero_adapter_equivalence(bundle)
+    split, episodes = load_split_episodes(
+        data_file,
+        preprocessing=bundle.preprocessing,
+        split_seed=manifest.episode_split.seed,
+        train_fraction=manifest.episode_split.train_fraction,
+        validation_fraction=manifest.episode_split.validation_fraction,
+        splits=("train", "validation"),
+    )
+    stream = task_stream_from_bundle(
+        bundle, task_id=identifier, instruction=instruction, episodes=episodes["train"]
+    )
+    held_out_stream = task_stream_from_bundle(
+        bundle, task_id=identifier, instruction=instruction, episodes=episodes["validation"]
+    )
+    token_width = int(config["adapter"]["token_width"])
+    spec, _ = build_adapter_spec_and_factors(bundle, token_width=token_width)
+    identity = ZooRunIdentity(
+        task_id=identifier,
+        suite=args.suite,
+        task_index=args.task_index,
+        instruction=instruction,
+        seed=args.seed,
+        manifest_name=manifest.name,
+        zoo_sha256=manifest.zoo_sha256(),
+        budget=manifest.zoo.training_identity(),
+        snapshot_updates=tuple(stages),
+        purpose=purpose,
+        dataset_sha256=dataset_sha256,
+        train_episode_ids=split.train,
+        held_out_episode_ids=split.validation,
+        base_sha256=bundle.base_sha256,
+        base_revision=bundle.base_revision,
+        architecture_sha256=bundle.architecture_sha256,
+        preprocessing_sha256=bundle.preprocessing.sha256(),
+        action_convention_sha256=bundle.action_convention.sha256(),
+        adapter_spec_sha256=spec.sha256(),
+        environment_profile=str(environment["profile"]),
+    )
+    if summary_path.is_file():
+        recorded = json.loads(summary_path.read_text(encoding="utf-8"))
+        if recorded.get("completed"):
+            # A finished run is reused only if it is this run: same manifest,
+            # budget, data, base, architecture, preprocessing, and adapter layout.
+            if recorded.get("run_identity_sha256") != identity.sha256():
+                current = identity.to_dict()
+                differing = sorted(
+                    key
+                    for key, value in recorded.get("run_identity", {}).items()
+                    if current.get(key) != value
+                )
+                raise FileExistsError(
+                    f"{run_directory} holds a completed zoo run with a different identity "
+                    f"(differing fields: {differing}). Zoo runs are never overwritten; use a new "
+                    "experiment manifest name or research root."
+                )
+            print(json.dumps({"ok": True, "already_complete": str(summary_path)}, indent=2))
+            return 0
+    trainer = ZooTrainer(
+        bundle=bundle,
+        stream=stream,
+        held_out_stream=held_out_stream,
+        budget=manifest.zoo,
+        identity=identity,
+        token_width=token_width,
+        sequence_window=int(config["adapter"]["sequence_window"]),
+        gradient_clip_norm=1.0,
+    )
+    import jax
+
+    gradient_gate = assert_adapter_gradient_reachability(
+        bundle, trainer._held_out_batches[0], jax.random.PRNGKey(args.seed)
+    )
+    resumed = trainer.restore(resume_directory)
+    if resumed and trainer.update_step in stages:
+        # The resume state of a stage is written before its snapshot. A crash
+        # between the two leaves the snapshot missing (written now, from the
+        # exactly restored state) or complete (adopted after an exact check).
+        trainer.ensure_snapshot(
+            run_directory / f"update_{trainer.update_step}",
+            snapshot_index=stages.index(trainer.update_step),
+        )
+    commit, dirty = git_state(REPO_ROOT)
+    provenance = {
+        "command": list(sys.argv),
+        "git_commit": commit,
+        "git_dirty": dirty,
+        "environment": environment,
+        "inputs": input_hashes(args),
+        "manifest_sha256": manifest.sha256(),
+        "bundle": bundle.identity(),
+        "controller_actions": stream.normalization.to_dict(),
+        "resumed_from_update": trainer.update_step if resumed else None,
+        "gates": {
+            "zero_adapter_equivalence": equivalence,
+            "gradient_reachability": {
+                key: gradient_gate[key]
+                for key in (
+                    "branches",
+                    "minimum_initial_up_gradient_norm",
+                    "maximum_initial_down_gradient_norm",
+                    "minimum_post_update_down_gradient_norm",
+                )
+            },
+        },
+    }
+
+    def on_update(current: ZooTrainer) -> None:
+        step = current.update_step
+        is_stage = step in stages
+        # Resume state first: a snapshot is then never newer than the state a
+        # restart resumes from, so no snapshot has to be recomputed. (Recomputing
+        # is exact on CPU but not guaranteed on GPU without deterministic ops.)
+        if is_stage or step % args.resume_every == 0:
+            current.save_resume(resume_directory)
+        if is_stage:
+            sample_directory = run_directory / f"update_{step}"
+            current.ensure_snapshot(sample_directory, snapshot_index=stages.index(step))
 
     try:
-        import jax
-        import optax
-    except ImportError as exc:
-        raise RuntimeError("official zoo training requires the WSL2 JAX research environment") from exc
-
-    config = load_yaml(args.config)
-    tasks = load_yaml(args.tasks)
-    validate_research_config(config)
-    validate_reference_tasks(tasks)
-    if args.suite not in tasks["suites"] or not 0 <= args.task_index < 10:
-        raise ValueError("suite/task index is outside the locked reference protocol")
-    if args.seed not in config["population"]["seeds"]:
-        raise ValueError("seed is outside the locked three-seed population")
-    instruction = tasks["suites"][args.suite][args.task_index]
-    task_id = f"{args.suite}_{args.task_index}"
-    evidence_path = Path(args.evidence)
-    evidence = load_task_evidence(evidence_path)
-    if evidence.task_id != task_id or evidence.suite != args.suite:
-        raise ValueError("evidence identity does not match requested population run")
-
-    data_root = Path(args.data_root or config["data"]["root"])
-    task_files = load_suite_manifest(data_root / args.suite, tasks["suites"][args.suite], allow_missing=True)
-    data_file = task_files[args.task_index]
-    if data_file is None:
-        raise FileNotFoundError(f"data file for task {args.task_index} is not downloaded in {data_root / args.suite}")
-    if evidence.raw_feature_references.get("dataset_sha256") != sha256_file(data_file):
-        raise ValueError("evidence was not extracted from the locked task dataset")
-    dataset = StrictLiberoHDF5(
-        data_file,
-        require_wrist_camera=bool(config["data"]["require_wrist_camera"]),
-        required_proprio_keys=tuple(config["data"]["proprio_keys"]),
-    )
-    episode_split = dataset.split(seed=int(config["data"]["split_seed"]))
-    episodes = tuple(dataset.iter_episodes(episode_split.train))
-    if tuple(episode.episode_id for episode in episodes) != evidence.episode_ids:
-        raise ValueError("evidence training episodes differ from the locked episode split")
-    normalization = ActionNormalization.fit(episodes)
-
-    bundle = load_research_octo(
-        args.checkpoint,
-        rank=int(config["adapter"]["rank"]),
-        alpha=float(config["adapter"]["alpha"]),
-        seed=args.seed,
-    )
-    if evidence.raw_feature_references.get("base_sha256") != bundle.base_sha256:
-        raise ValueError("evidence and zoo run use different Octo base checkpoints")
-    assert_zero_adapter_equivalence(bundle)
-    state = initial_adapter_state(bundle)
-    accumulation_steps = int(config["continual_learning"]["gradient_accumulation_steps"])
-    optimizer = optax.MultiSteps(
-        optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(args.learning_rate)),
-        every_k_schedule=accumulation_steps,
-    )
-    optimizer_state = optimizer.init(state)
-
-    @jax.jit
-    def train_step(adapter_state, opt_state, batch, key):
-        (loss_and_metrics, gradients) = adapter_value_and_grad(
-            bundle, adapter_state, batch, key
+        trainer.train_until(max(stages), on_update=on_update, log_every=args.log_every)
+        base_check = assert_base_parameters_unchanged(bundle)
+        summary = trainer.run_summary(completed=True)
+        summary["provenance"] = {**provenance, "base_parameters_after_training": base_check}
+        atomic_write_json(summary_path, summary)
+        trainer.save_resume(resume_directory)
+    except BaseException as exc:
+        # Preserve the failed run: history so far, snapshots already written,
+        # and the failure itself stay on disk for diagnosis.
+        summary = trainer.run_summary(
+            completed=False,
+            failures=[{"type": type(exc).__name__, "message": str(exc)}],
         )
-        loss, metrics = loss_and_metrics
-        updates, opt_state = optimizer.update(gradients, opt_state, adapter_state)
-        adapter_state = optax.apply_updates(adapter_state, updates)
-        return adapter_state, opt_state, loss, metrics
-
-    example_batch = bundle.pretrained_model.example_batch
-    primary_shape = np.asarray(example_batch["observation"]["image_primary"]).shape
-    window_size = int(primary_shape[1])
-    image_size = (int(primary_shape[-3]), int(primary_shape[-2]))
-    action_horizon = int(np.asarray(example_batch["action"]).shape[-2])
-    steps = args.steps or int(config["continual_learning"]["train_steps_per_task"])
-    batch_size = args.batch_size or int(config["continual_learning"]["micro_batch_size"])
-    if steps <= 0 or batch_size <= 0 or accumulation_steps <= 0 or args.learning_rate <= 0:
-        raise ValueError("steps, batch size, and learning rate must be positive")
-    fractions = tuple(float(value) for value in config["population"]["late_checkpoint_fractions"])
-    save_steps = {max(1, int(round(steps * fraction))): fraction for fraction in fractions}
-    if len(save_steps) != len(fractions):
-        raise ValueError("training steps collapse distinct late-checkpoint fractions")
-
-    rng = np.random.default_rng(args.seed)
-    jax_key = jax.random.PRNGKey(args.seed)
-    micro_step = 0
-    update_step = 0
-    history = []
-    saved = []
-    started = perf_counter()
-    while update_step < steps:
-        for batch in _epoch_batches(
-            episodes,
-            instruction=instruction,
-            normalization=normalization,
-            window_size=window_size,
-            action_horizon=action_horizon,
-            image_size=image_size,
-            batch_size=batch_size,
-            rng=rng,
-            text_processor=bundle.pretrained_model.text_processor,
-            example_batch=example_batch,
-        ):
-            if update_step >= steps:
-                break
-            micro_step += 1
-            jax_key, step_key = jax.random.split(jax_key)
-            state, optimizer_state, loss, metrics = train_step(
-                state, optimizer_state, batch, step_key
-            )
-            if micro_step % accumulation_steps != 0:
-                continue
-            update_step += 1
-            if update_step == 1 or update_step % 100 == 0 or update_step in save_steps:
-                history.append(
-                    {"step": update_step, "micro_step": micro_step, "loss": float(loss)}
-                )
-            if update_step in save_steps:
-                sample_dir, metadata = _save_population_checkpoint(
-                    output_root=Path(args.output_root),
-                    suite=args.suite,
-                    task_index=args.task_index,
-                    seed=args.seed,
-                    step=update_step,
-                    fraction=save_steps[update_step],
-                    bundle=bundle,
-                    adapter_state=state,
-                    token_width=int(config["adapter"]["token_width"]),
-                    evidence_path=evidence_path,
-                    data_sha256=sha256_file(data_file),
-                    split="validation" if args.task_index in {8, 9} else "train",
-                )
-                saved.append(str(sample_dir))
-
-    run_summary = {
-        "schema_version": 1,
-        "task_id": task_id,
-        "suite": args.suite,
-        "task_index": args.task_index,
-        "seed": args.seed,
-        "base_sha256": bundle.base_sha256,
-        "base_revision": bundle.base_revision,
-        "dataset_sha256": sha256_file(data_file),
-        "steps": steps,
-        "learning_rate": args.learning_rate,
-        "batch_size": batch_size,
-        "gradient_accumulation_steps": accumulation_steps,
-        "wall_time_seconds": perf_counter() - started,
-        "saved_samples": saved,
-        "history": history,
-    }
-    summary_path = Path(args.output_root) / args.suite / task_id / f"seed_{args.seed}" / "run.json"
-    summary_path.write_text(json.dumps(run_summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"ok": True, "summary": str(summary_path), "samples": saved}, indent=2))
+        summary["provenance"] = provenance
+        atomic_write_json(summary_path, summary)
+        raise
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "summary": str(summary_path),
+                "samples": [item["directory"] for item in trainer.snapshots],
+                "held_out_loss_frozen_base": trainer.base_held_out_loss,
+                "held_out_loss_final": trainer.held_out_loss(),
+                "steady_micro_steps_per_second": summary["resources"][
+                    "steady_micro_steps_per_second"
+                ],
+                "compile_seconds": summary["resources"]["compile_seconds"],
+            },
+            indent=2,
+        )
+    )
     return 0
 
 

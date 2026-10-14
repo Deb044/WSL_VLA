@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Report whether a Methodology 1 artifact tree is publication-complete."""
+"""Report whether a Methodology 1 experiment is complete and internally consistent.
+
+Reads ``<research root>/experiments/<manifest name>``. Completeness is judged
+against the experiment manifest; a method not outperforming another never fails
+the audit.
+"""
 
 from __future__ import annotations
 
@@ -17,12 +22,16 @@ def _find_repo_root() -> Path:
 REPO_ROOT = _find_repo_root()
 sys.path.insert(0, str(REPO_ROOT))
 
+from wsl_vla.experiments.manifest import load_experiment_manifest
+from wsl_vla.experiments.protocol import load_yaml, validate_reference_tasks
 from wsl_vla.experiments.study_audit import audit_methodology1_study
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("research_root")
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--tasks", default="configs/reference_tasks.yaml")
+    parser.add_argument("--research-root", default="research_results")
     parser.add_argument("--output")
     parser.add_argument(
         "--allow-incomplete",
@@ -30,7 +39,10 @@ def main() -> int:
         help="Return success after writing a progress report even when artifacts are missing",
     )
     args = parser.parse_args()
-    report = audit_methodology1_study(args.research_root)
+    tasks = load_yaml(args.tasks)
+    validate_reference_tasks(tasks)
+    manifest = load_experiment_manifest(args.manifest, reference_tasks=tasks)
+    report = audit_methodology1_study(args.research_root, manifest)
     serialized = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:
         destination = Path(args.output)

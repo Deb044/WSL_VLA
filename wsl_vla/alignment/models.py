@@ -1,7 +1,25 @@
-"""Optional JAX/Flax implementation for aligned weight-space learning.
+"""JAX/Flax implementation of aligned weight-space learning.
 
 Importing this module is safe without research dependencies. Constructing a
 module or calling an algorithm raises a targeted dependency error instead.
+
+Architecture
+------------
+Weight tokens of one modality form a stream that is cut into fixed sequence
+windows (128 tokens by default, trailing padding masked). One encoder and one
+decoder transformer - shared by the vision, language, and action streams -
+process every window independently; ``wsl_vla.adapters.packing.from_windows``
+restores the complete sequence for mapping and decoding. Each token is tagged
+with five structural embeddings: component, transformer layer, parameter
+entry, row, and column window.
+
+Attention is implemented here from ``nn.Dense`` layers rather than through
+``flax.linen`` attention modules, whose signatures and parameter names changed
+between the two locked environments; alignment checkpoints therefore load in
+both.
+
+No module below has an architecture default: every size is a required field
+that comes from the resolved, stored configuration.
 """
 
 from __future__ import annotations
@@ -10,6 +28,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 import numpy as np
+
+from ..contracts import COMPONENT_NAMES
 
 try:  # pragma: no cover - exercised in the Linux research environment
     import flax.linen as nn
@@ -24,318 +44,226 @@ else:
     _IMPORT_ERROR = None
 
 
+STRUCTURAL_EMBEDDINGS = ("component", "layer", "entry", "row", "column_window")
+MASKED_LOGIT = -1e9
+MIN_TEMPERATURE = 0.01
+MAX_TEMPERATURE = 1.0
+
+
 def require_jax() -> None:
     if _IMPORT_ERROR is not None:
         raise RuntimeError(
-            "The official research path requires Python 3.11 with the "
-            "'research' extra installed under Linux/WSL2."
+            "The official research path requires one of the locked research "
+            "environments (envs/scripts/setup_research.sh)."
         ) from _IMPORT_ERROR
-
-
-ATTENTION_QUERY_CHUNK = 1024
-
-
-def chunked_dot_product_attention(query, key, value, bias=None, mask=None, **kwargs):
-    """Exact softmax attention evaluated over rematerialized query chunks.
-
-    A packed adapter has about 20k tokens, so one dense attention map is
-    several GB per layer and a 4-sample training step needs ~184 GB. Splitting
-    queries keeps peak memory at one ``[batch, heads, chunk, tokens]`` slab while
-    producing the same output as ``nn.dot_product_attention``.
-    """
-
-    if bias is not None or (
-        kwargs.get("dropout_rate", 0.0) > 0 and not kwargs.get("deterministic", True)
-    ):
-        raise ValueError("chunked attention supports neither bias nor dropout")
-    length = query.shape[-3]
-    chunk = min(ATTENTION_QUERY_CHUNK, length)
-    padded = -(-length // chunk) * chunk
-    pad = padded - length
-    query = jnp.pad(query, [(0, 0)] * (query.ndim - 3) + [(0, pad), (0, 0), (0, 0)])
-    if mask is not None:
-        mask = jnp.broadcast_to(mask, (*query.shape[:-3], mask.shape[-3], length, key.shape[-3]))
-        mask = jnp.pad(mask, [(0, 0)] * (mask.ndim - 2) + [(0, pad), (0, 0)])
-    chunks = padded // chunk
-
-    @jax.checkpoint
-    def attend(index):
-        start = index * chunk
-        query_chunk = jax.lax.dynamic_slice_in_dim(query, start, chunk, axis=-3)
-        mask_chunk = (
-            None if mask is None else jax.lax.dynamic_slice_in_dim(mask, start, chunk, axis=-2)
-        )
-        return nn.dot_product_attention(
-            query_chunk, key, value, mask=mask_chunk, precision=kwargs.get("precision")
-        )
-
-    output = jax.lax.map(attend, jnp.arange(chunks))
-    output = jnp.moveaxis(output, 0, -4)
-    output = output.reshape(*output.shape[:-4], padded, *output.shape[-2:])
-    return output[..., :length, :, :]
 
 
 if nn is not None:  # pragma: no branch
 
-    class ModalityResidualAdapter(nn.Module):
-        """Zero-initialized low-rank residual for one token modality."""
+    class MultiHeadSelfAttention(nn.Module):
+        """Masked self-attention over the tokens of one sequence window."""
 
-        rank: int
-        alpha: float
+        heads: int
 
         @nn.compact
-        def __call__(self, inputs):
-            down = nn.Dense(
-                self.rank,
-                use_bias=False,
-                kernel_init=nn.initializers.normal(stddev=0.02),
-                name="down",
-            )(inputs)
-            up = nn.Dense(
-                inputs.shape[-1],
-                use_bias=False,
-                kernel_init=nn.initializers.zeros,
-                name="up",
-            )(down)
-            return up * (self.alpha / self.rank)
+        def __call__(self, x, valid):
+            width = x.shape[-1]
+            if width % self.heads:
+                raise ValueError("transformer width must be divisible by the head count")
+            head_dim = width // self.heads
+
+            def split(values):
+                return values.reshape(*values.shape[:-1], self.heads, head_dim)
+
+            query = split(nn.Dense(width, name="query")(x))
+            key = split(nn.Dense(width, name="key")(x))
+            value = split(nn.Dense(width, name="value")(x))
+            logits = jnp.einsum("...qhd,...khd->...hqk", query, key) / np.sqrt(head_dim)
+            # Padding tokens are never attended to; a fully padded window keeps
+            # finite (uniform) weights and is discarded by the caller.
+            logits = jnp.where(valid[..., None, None, :], logits, MASKED_LOGIT)
+            weights = jax.nn.softmax(logits, axis=-1)
+            mixed = jnp.einsum("...hqk,...khd->...qhd", weights, value)
+            return nn.Dense(width, name="out")(mixed.reshape(*x.shape))
 
 
-    class PackedWeightEncoder(nn.Module):
-        token_width: int
-        latent_dim: int
-        hidden_dim: int
+    class WindowTransformer(nn.Module):
+        """Pre-norm transformer stack applied independently to each window."""
+
         layers: int
         heads: int
-        max_tokens: int
-        max_layers: int
-        component_count: int
+        mlp_ratio: int
 
         @nn.compact
-        def __call__(self, tokens, token_mask, component_ids, layer_ids, *, train: bool):
-            token_valid = jnp.any(token_mask, axis=-1)
-            x = nn.Dense(self.hidden_dim, name="input_projection")(tokens)
-            position = self.param(
-                "position_embedding",
-                nn.initializers.normal(stddev=0.02),
-                (self.max_tokens, self.hidden_dim),
-            )[: tokens.shape[1]]
-            component = nn.Embed(
-                self.component_count, self.hidden_dim, name="component_embedding"
-            )(component_ids)
-            layer = nn.Embed(self.max_layers, self.hidden_dim, name="layer_embedding")(
-                layer_ids
-            )
-            x = x + position[None] + component + layer
-            attention_mask = nn.make_attention_mask(token_valid, token_valid)
+        def __call__(self, x, valid):
+            width = x.shape[-1]
             for index in range(self.layers):
-                residual = x
-                x = nn.LayerNorm(name=f"encoder_norm_attn_{index}")(x)
-                x = nn.SelfAttention(
-                    num_heads=self.heads,
-                    dropout_rate=0.0,
-                    attention_fn=chunked_dot_product_attention,
-                    name=f"encoder_attention_{index}",
-                )(x, mask=attention_mask, deterministic=not train)
-                x = residual + x
-                residual = x
-                x = nn.LayerNorm(name=f"encoder_norm_mlp_{index}")(x)
-                x = nn.Dense(self.hidden_dim * 4, name=f"encoder_mlp_in_{index}")(x)
-                x = nn.gelu(x)
-                x = nn.Dense(self.hidden_dim, name=f"encoder_mlp_out_{index}")(x)
-                x = residual + x
-            return nn.Dense(self.latent_dim, name="to_latent")(x) * token_valid[..., None]
+                attended = MultiHeadSelfAttention(self.heads, name=f"attention_{index}")(
+                    nn.LayerNorm(name=f"norm_attention_{index}")(x), valid
+                )
+                x = x + attended
+                hidden = nn.LayerNorm(name=f"norm_mlp_{index}")(x)
+                hidden = nn.gelu(nn.Dense(width * self.mlp_ratio, name=f"mlp_in_{index}")(hidden))
+                x = x + nn.Dense(width, name=f"mlp_out_{index}")(hidden)
+            return nn.LayerNorm(name="norm_out")(x)
 
 
-    class PackedWeightDecoder(nn.Module):
+    class StructuralEmbedding(nn.Module):
+        """Sum of component, layer, parameter-entry, row, and column-window embeddings."""
+
+        width: int
+        sizes: tuple[int, int, int, int, int]
+
+        @nn.compact
+        def __call__(self, identities):
+            total = 0.0
+            for name, size in zip(STRUCTURAL_EMBEDDINGS, self.sizes):
+                total = total + nn.Embed(size, self.width, name=f"{name}_embedding")(
+                    identities[name]
+                )
+            return total
+
+
+    class WeightWindowEncoder(nn.Module):
+        latent_dim: int
+        width: int
+        layers: int
+        heads: int
+        mlp_ratio: int
+        embedding_sizes: tuple[int, int, int, int, int]
+
+        @nn.compact
+        def __call__(self, tokens, valid, identities):
+            x = nn.Dense(self.width, name="input_projection")(tokens)
+            x = x + StructuralEmbedding(self.width, self.embedding_sizes, name="structure")(identities)
+            x = WindowTransformer(self.layers, self.heads, self.mlp_ratio, name="transformer")(x, valid)
+            return nn.Dense(self.latent_dim, name="to_latent")(x) * valid[..., None]
+
+
+    class WeightWindowDecoder(nn.Module):
+        """Transformer decoder from latent tokens back to normalized weight tokens."""
+
         token_width: int
+        width: int
+        layers: int
+        heads: int
+        mlp_ratio: int
+        embedding_sizes: tuple[int, int, int, int, int]
+
+        @nn.compact
+        def __call__(self, latents, valid, identities):
+            x = nn.Dense(self.width, name="from_latent")(latents)
+            x = x + StructuralEmbedding(self.width, self.embedding_sizes, name="structure")(identities)
+            x = WindowTransformer(self.layers, self.heads, self.mlp_ratio, name="transformer")(x, valid)
+            return nn.Dense(self.token_width, name="output_projection")(x) * valid[..., None]
+
+
+    def _masked_mean(values, mask):
+        weights = mask.astype(values.dtype)[..., None]
+        return jnp.sum(values * weights, axis=-2) / jnp.maximum(jnp.sum(weights, axis=-2), 1.0)
+
+
+    class SetEvidenceEncoder(nn.Module):
+        """Trainable aggregation of a masked feature set (frames or tokens)."""
+
         latent_dim: int
         hidden_dim: int
-
-        @nn.compact
-        def __call__(self, latent, token_mask, component_ids, layer_ids, *, train: bool):
-            del component_ids, layer_ids, train
-            token_valid = jnp.any(token_mask, axis=-1)
-            x = nn.Dense(self.hidden_dim, name="from_latent")(latent)
-            x = nn.gelu(x)
-            x = nn.LayerNorm(name="decoder_norm")(x)
-            output = nn.Dense(self.token_width, name="output_projection")(x)
-            return output * token_mask * token_valid[..., None]
-
-
-    class PackedWeightAutoencoder(nn.Module):
-        """Masked shared token autoencoder with a separately callable decoder."""
-
-        token_width: int
-        latent_dim: int = 128
-        hidden_dim: int = 256
-        layers: int = 3
-        heads: int = 4
-        max_tokens: int = 8192
-        max_layers: int = 64
-        component_count: int = 3
-
-        def setup(self):
-            self.encoder = PackedWeightEncoder(
-                token_width=self.token_width,
-                latent_dim=self.latent_dim,
-                hidden_dim=self.hidden_dim,
-                layers=self.layers,
-                heads=self.heads,
-                max_tokens=self.max_tokens,
-                max_layers=self.max_layers,
-                component_count=self.component_count,
-                name="encoder",
-            )
-            self.decoder = PackedWeightDecoder(
-                token_width=self.token_width,
-                latent_dim=self.latent_dim,
-                hidden_dim=self.hidden_dim,
-                name="decoder",
-            )
-
-        def __call__(self, tokens, token_mask, component_ids, layer_ids, *, train: bool):
-            latent = self.encoder(
-                tokens, token_mask, component_ids, layer_ids, train=train
-            )
-            reconstruction = self.decoder(
-                latent, token_mask, component_ids, layer_ids, train=train
-            )
-            return reconstruction, latent
-
-
-    class DeepSetsEvidenceEncoder(nn.Module):
-        output_dim: int = 128
-        hidden_dim: int = 256
 
         @nn.compact
         def __call__(self, features, mask):
-            x = nn.Dense(self.hidden_dim)(features)
-            x = nn.gelu(x)
-            x = nn.Dense(self.hidden_dim)(x)
-            mask_f = mask.astype(x.dtype)[..., None]
-            pooled = jnp.sum(x * mask_f, axis=1) / jnp.maximum(
-                jnp.sum(mask_f, axis=1), 1
-            )
-            pooled = nn.Dense(self.output_dim)(pooled)
-            return nn.LayerNorm()(pooled)
+            x = nn.gelu(nn.Dense(self.hidden_dim, name="element_in")(features))
+            x = nn.Dense(self.hidden_dim, name="element_out")(x)
+            pooled = _masked_mean(x, mask)
+            pooled = nn.gelu(nn.Dense(self.hidden_dim, name="pooled_in")(pooled))
+            return nn.LayerNorm(name="norm")(nn.Dense(self.latent_dim, name="pooled_out")(pooled))
 
 
-    class EvidenceProjector(nn.Module):
-        latent_dim: int = 128
+    class ChunkEvidenceEncoder(nn.Module):
+        """Action evidence: chunks are pooled per episode, then episodes per task."""
+
+        latent_dim: int
+        hidden_dim: int
 
         @nn.compact
-        def __call__(self, evidence):
-            x = nn.Dense(self.latent_dim * 2)(evidence)
-            x = nn.gelu(x)
-            x = nn.Dense(self.latent_dim)(x)
-            return nn.LayerNorm()(x)
+        def __call__(self, features, mask):
+            x = nn.gelu(nn.Dense(self.hidden_dim, name="chunk_in")(features))
+            x = nn.Dense(self.hidden_dim, name="chunk_out")(x)
+            episodes = _masked_mean(x, mask)
+            episodes = nn.gelu(nn.Dense(self.hidden_dim, name="episode_in")(episodes))
+            pooled = _masked_mean(episodes, jnp.any(mask, axis=-1))
+            pooled = nn.gelu(nn.Dense(self.hidden_dim, name="pooled_in")(pooled))
+            return nn.LayerNorm(name="norm")(nn.Dense(self.latent_dim, name="pooled_out")(pooled))
 
 
     class AlignmentSystem(nn.Module):
-        """Joint weight autoencoder and trainable task-evidence encoders."""
+        """Shared weight autoencoder plus jointly trained evidence encoders."""
 
         token_width: int
-        vision_feature_dim: int
-        language_feature_dim: int
-        action_feature_dim: int
-        latent_dim: int = 128
-        hidden_dim: int = 256
-        layers: int = 3
-        heads: int = 4
-        max_tokens: int = 8192
-        max_layers: int = 64
-        task_count: int = 1
-        initial_temperature: float = 0.07
+        latent_dim: int
+        width: int
+        encoder_layers: int
+        decoder_layers: int
+        heads: int
+        mlp_ratio: int
+        evidence_hidden_dim: int
+        embedding_sizes: tuple[int, int, int, int, int]
+        train_task_count: int
+        initial_temperature: float
 
         def setup(self):
-            self.weight_autoencoder = PackedWeightAutoencoder(
-                token_width=self.token_width,
-                latent_dim=self.latent_dim,
-                hidden_dim=self.hidden_dim,
-                layers=self.layers,
-                heads=self.heads,
-                max_tokens=self.max_tokens,
-                max_layers=self.max_layers,
-                name="weight_autoencoder",
+            # Submodules are plain attributes: Flax names each one after its
+            # attribute, so parameter paths are stable and explicit.
+            self.encoder = WeightWindowEncoder(
+                self.latent_dim, self.width, self.encoder_layers, self.heads,
+                self.mlp_ratio, self.embedding_sizes,
             )
-            self.vision_evidence = DeepSetsEvidenceEncoder(
-                output_dim=self.latent_dim,
-                hidden_dim=self.hidden_dim,
-                name="vision_evidence",
+            self.decoder = WeightWindowDecoder(
+                self.token_width, self.width, self.decoder_layers, self.heads,
+                self.mlp_ratio, self.embedding_sizes,
             )
-            self.language_evidence = EvidenceProjector(
-                latent_dim=self.latent_dim, name="language_evidence"
-            )
-            self.action_evidence = EvidenceProjector(
-                latent_dim=self.latent_dim, name="action_evidence"
-            )
-            self.task_classifiers = {
-                name: nn.Dense(self.task_count, name=f"{name}_task_classifier")
-                for name in ("vision", "language", "action")
-            }
-            self.log_temperatures = {
-                name: self.param(
-                    f"log_temperature_{name}",
-                    lambda key: jnp.asarray(np.log(self.initial_temperature), dtype=jnp.float32),
-                )
-                for name in ("vision", "language", "action")
-            }
-
-        def __call__(
-            self,
-            tokens,
-            token_mask,
-            component_ids,
-            layer_ids,
-            vision_features,
-            vision_mask,
-            language_features,
-            action_features,
-            *,
-            train: bool,
-        ):
-            reconstruction, latents = self.weight_autoencoder(
-                tokens,
-                token_mask,
-                component_ids,
-                layer_ids,
-                train=train,
-            )
-            evidence = {
-                "vision": self.vision_evidence(vision_features, vision_mask),
-                "language": self.language_evidence(language_features),
-                "action": self.action_evidence(action_features),
-            }
-            task_logits = {
-                name: self.task_classifiers[name](embedding)
-                for name, embedding in evidence.items()
-            }
-            temperatures = {
-                name: jnp.clip(jnp.exp(value), 0.01, 1.0)
-                for name, value in self.log_temperatures.items()
-            }
-            return reconstruction, latents, evidence, temperatures, task_logits
-
-        def decode(self, latents, token_mask, component_ids, layer_ids, *, train: bool = False):
-            return self.weight_autoencoder.decoder(
-                latents, token_mask, component_ids, layer_ids, train=train
+            self.vision_evidence = SetEvidenceEncoder(self.latent_dim, self.evidence_hidden_dim)
+            self.language_evidence = SetEvidenceEncoder(self.latent_dim, self.evidence_hidden_dim)
+            self.action_evidence = ChunkEvidenceEncoder(self.latent_dim, self.evidence_hidden_dim)
+            # Auxiliary heads cover the fold's *training* task identities only.
+            self.vision_task_classifier = nn.Dense(self.train_task_count)
+            self.language_task_classifier = nn.Dense(self.train_task_count)
+            self.action_task_classifier = nn.Dense(self.train_task_count)
+            initial = float(np.log(self.initial_temperature))
+            self.log_temperature = self.param(
+                "log_temperature",
+                lambda key, shape: jnp.full(shape, initial, dtype=jnp.float32),
+                (len(COMPONENT_NAMES),),
             )
 
-        def encode_weights(
-            self, tokens, token_mask, component_ids, layer_ids, *, train: bool = False
-        ):
-            return self.weight_autoencoder.encoder(
-                tokens, token_mask, component_ids, layer_ids, train=train
-            )
+        def encode(self, tokens, valid, identities):
+            return self.encoder(tokens, valid, identities)
 
-        def encode_evidence(
-            self, vision_features, vision_mask, language_features, action_features
-        ):
+        def decode(self, latents, valid, identities):
+            return self.decoder(latents, valid, identities)
+
+        def encode_evidence(self, evidence):
             return {
-                "vision": self.vision_evidence(vision_features, vision_mask),
-                "language": self.language_evidence(language_features),
-                "action": self.action_evidence(action_features),
+                "vision": self.vision_evidence(evidence["vision"], evidence["vision_mask"]),
+                "language": self.language_evidence(evidence["language"], evidence["language_mask"]),
+                "action": self.action_evidence(evidence["action"], evidence["action_mask"]),
             }
+
+        def classify(self, embeddings):
+            return {
+                "vision": self.vision_task_classifier(embeddings["vision"]),
+                "language": self.language_task_classifier(embeddings["language"]),
+                "action": self.action_task_classifier(embeddings["action"]),
+            }
+
+        def temperatures(self):
+            values = jnp.clip(jnp.exp(self.log_temperature), MIN_TEMPERATURE, MAX_TEMPERATURE)
+            return {name: values[index] for index, name in enumerate(COMPONENT_NAMES)}
+
+        def __call__(self, tokens, valid, identities, evidence):
+            latents = self.encode(tokens, valid, identities)
+            reconstruction = self.decode(latents, valid, identities)
+            embeddings = self.encode_evidence(evidence)
+            return reconstruction, latents, embeddings, self.classify(embeddings), self.temperatures()
 
 
 else:
@@ -344,23 +272,69 @@ else:
         def __init__(self, *args, **kwargs):
             require_jax()
 
-    ModalityResidualAdapter = _MissingJax
-    PackedWeightAutoencoder = _MissingJax
-    PackedWeightEncoder = _MissingJax
-    PackedWeightDecoder = _MissingJax
-    DeepSetsEvidenceEncoder = _MissingJax
-    EvidenceProjector = _MissingJax
+    MultiHeadSelfAttention = _MissingJax
+    WindowTransformer = _MissingJax
+    StructuralEmbedding = _MissingJax
+    WeightWindowEncoder = _MissingJax
+    WeightWindowDecoder = _MissingJax
+    SetEvidenceEncoder = _MissingJax
+    ChunkEvidenceEncoder = _MissingJax
     AlignmentSystem = _MissingJax
 
 
-def masked_reconstruction_loss(reconstruction, target, mask):
+def map_windows(function: Callable[..., Any], arrays: tuple, *, chunk: int):
+    """Apply ``function`` to windows in rematerialized chunks.
+
+    ``arrays`` share a leading window axis. With ``chunk`` windows per step the
+    backward pass keeps one chunk of activations alive and recomputes the rest,
+    so a batch of several thousand windows fits on a small accelerator. The
+    result equals a single call on all windows.
+    """
+
     require_jax()
-    weights = mask.astype(reconstruction.dtype)
-    numerator = jnp.sum(jnp.square(reconstruction - target) * weights)
-    return numerator / jnp.maximum(jnp.sum(weights), 1)
+    count = arrays[0].shape[0]
+    if chunk <= 0 or chunk >= count:
+        return function(*arrays)
+    padding = (-count) % chunk
+    stacked = tuple(
+        jnp.pad(value, [(0, padding)] + [(0, 0)] * (value.ndim - 1)).reshape(
+            -1, chunk, *value.shape[1:]
+        )
+        for value in arrays
+    )
+    output = jax.lax.map(jax.checkpoint(lambda items: function(*items)), stacked)
+    return output.reshape(-1, *output.shape[2:])[:count]
 
 
-def multi_positive_info_nce(
+def component_balanced_reconstruction_loss(reconstruction, target, token_mask, component_ids):
+    """Masked squared error averaged within each component, then across components.
+
+    ``reconstruction`` and ``target`` are ``[batch, tokens, width]`` in
+    RMS-normalized units; ``token_mask`` is ``[tokens, width]`` and
+    ``component_ids`` is ``[tokens]``. The action stream holds more than twice
+    as many tokens as the others; equal component weights keep it from
+    dominating the objective.
+    """
+
+    require_jax()
+    mask = jnp.asarray(token_mask).astype(reconstruction.dtype)
+    squared = jnp.square(reconstruction - target) * mask
+    per_token = jnp.sum(squared, axis=(0, 2))
+    valid_per_token = jnp.sum(mask, axis=-1) * reconstruction.shape[0]
+    component_ids = jnp.asarray(component_ids)
+    losses = []
+    for index in range(len(COMPONENT_NAMES)):
+        selected = (component_ids == index).astype(reconstruction.dtype)
+        losses.append(
+            jnp.sum(per_token * selected) / jnp.maximum(jnp.sum(valid_per_token * selected), 1.0)
+        )
+    per_component = jnp.stack(losses)
+    return jnp.mean(per_component), {
+        name: per_component[index] for index, name in enumerate(COMPONENT_NAMES)
+    }
+
+
+def bidirectional_token_contrastive_loss(
     token_latents,
     token_valid,
     evidence,
@@ -368,29 +342,60 @@ def multi_positive_info_nce(
     *,
     temperature,
 ):
-    """Symmetric contrastive loss without false negatives across checkpoints."""
+    """Token-wise, bidirectional, same-task multi-positive InfoNCE.
+
+    ``token_latents`` is ``[batch, tokens, dim]`` for one modality stream,
+    ``token_valid`` is ``[batch, tokens]`` (False for padding), ``evidence`` is
+    ``[batch, dim]`` with one evidence embedding per sample, and
+    ``task_labels`` is ``[batch]``. With ``s[b, t, k] = cos(z[b, t], e[k]) / tau``
+    and ``P(i)`` the samples sharing sample ``i``'s task:
+
+    * weight -> evidence, for every valid token ``(b, t)``::
+
+          -log( sum_{k in P(b)} exp s[b,t,k] / sum_k exp s[b,t,k] )
+
+    * evidence -> weight, for every evidence ``k`` and token position ``t``,
+      contrasting the batch's tokens at that same position::
+
+          -log( sum_{b in P(k), valid} exp s[b,t,k] / sum_{b valid} exp s[b,t,k] )
+
+    Padding is excluded as a query, as a candidate, and from both averages. The
+    two directional means are averaged with equal weight.
+    """
 
     require_jax()
     z = token_latents / jnp.maximum(jnp.linalg.norm(token_latents, axis=-1, keepdims=True), 1e-8)
     e = evidence / jnp.maximum(jnp.linalg.norm(evidence, axis=-1, keepdims=True), 1e-8)
+    valid = jnp.asarray(token_valid, dtype=bool)
     positives = task_labels[:, None] == task_labels[None, :]
-
     logits = jnp.einsum("btd,kd->btk", z, e) / temperature
-    log_denominator = jax.scipy.special.logsumexp(logits, axis=-1)
-    positive_logits = jnp.where(positives[:, None, :], logits, -jnp.inf)
-    log_numerator = jax.scipy.special.logsumexp(positive_logits, axis=-1)
-    z_to_e = -(log_numerator - log_denominator)
-    z_to_e = jnp.sum(z_to_e * token_valid) / jnp.maximum(jnp.sum(token_valid), 1)
 
-    mask_f = token_valid.astype(z.dtype)[..., None]
-    pooled = jnp.sum(z * mask_f, axis=1) / jnp.maximum(jnp.sum(mask_f, axis=1), 1)
-    pooled = pooled / jnp.maximum(jnp.linalg.norm(pooled, axis=-1, keepdims=True), 1e-8)
-    reverse_logits = e @ pooled.T / temperature
-    reverse_denominator = jax.scipy.special.logsumexp(reverse_logits, axis=-1)
-    reverse_positive = jnp.where(positives, reverse_logits, -jnp.inf)
-    reverse_numerator = jax.scipy.special.logsumexp(reverse_positive, axis=-1)
-    e_to_z = -jnp.mean(reverse_numerator - reverse_denominator)
-    return 0.5 * (z_to_e + e_to_z)
+    log_all = jax.scipy.special.logsumexp(logits, axis=-1)
+    log_positive = jax.scipy.special.logsumexp(
+        jnp.where(positives[:, None, :], logits, MASKED_LOGIT), axis=-1
+    )
+    forward = -(log_positive - log_all)
+    forward_weight = valid.astype(logits.dtype)
+    weight_to_evidence = jnp.sum(forward * forward_weight) / jnp.maximum(
+        jnp.sum(forward_weight), 1.0
+    )
+
+    candidate = valid[:, :, None]
+    log_candidates = jax.scipy.special.logsumexp(
+        jnp.where(candidate, logits, MASKED_LOGIT), axis=0
+    )
+    positive_candidate = candidate & positives[:, None, :]
+    log_positive_candidates = jax.scipy.special.logsumexp(
+        jnp.where(positive_candidate, logits, MASKED_LOGIT), axis=0
+    )
+    # A (position, evidence) pair counts only if a valid positive token exists.
+    reverse_valid = jnp.any(positive_candidate, axis=0)
+    reverse = -jnp.where(reverse_valid, log_positive_candidates - log_candidates, 0.0)
+    reverse_weight = reverse_valid.astype(logits.dtype)
+    evidence_to_weight = jnp.sum(reverse * reverse_weight) / jnp.maximum(
+        jnp.sum(reverse_weight), 1.0
+    )
+    return 0.5 * (weight_to_evidence + evidence_to_weight)
 
 
 @dataclass(frozen=True)

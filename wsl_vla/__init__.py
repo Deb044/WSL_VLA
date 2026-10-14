@@ -5,19 +5,23 @@ isolated under :mod:`wsl_vla.smoke.legacy_torch` and is never a research path.
 """
 
 from .contracts import (
+    ActionConvention,
     AdapterEntry,
     AdapterSpec,
-    AlignmentCheckpointMetadata,
+    AlignmentCheckpoint,
     EvaluationRecord,
+    LegacyArtifactError,
     RunManifest,
     TaskEvidence,
 )
 
 __all__ = [
+    "ActionConvention",
     "AdapterEntry",
     "AdapterSpec",
-    "AlignmentCheckpointMetadata",
+    "AlignmentCheckpoint",
     "EvaluationRecord",
+    "LegacyArtifactError",
     "RunManifest",
     "TaskEvidence",
 ]

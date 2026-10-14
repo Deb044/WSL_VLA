@@ -23,10 +23,12 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from wsl_vla.adapters.latent import effective_updates_from_state, effective_updates_to_state
 from wsl_vla.contracts import RunManifest
-from wsl_vla.data.libero import StrictLiberoHDF5, load_suite_manifest
-from wsl_vla.data.octo_batches import ActionNormalization
+from wsl_vla.data.actions import ActionNormalization
+from wsl_vla.data.libero import load_suite_manifest
 from wsl_vla.evaluation.components import run_consecutive_component_swaps
-from wsl_vla.evaluation.libero_rollout import LiberoRolloutEvaluator, OctoLiberoPolicy
+from wsl_vla.evaluation.libero_rollout import OctoLiberoPolicy
+from wsl_vla.experiments.runtime import rollout_evaluator
+from wsl_vla.octo.compat import require_environment_profile
 from wsl_vla.evaluation.records import append_component_swap_record
 from wsl_vla.experiments.protocol import (
     LIBERO_GIT_REVISION,
@@ -45,10 +47,9 @@ from wsl_vla.experiments.provenance import (
     write_manifest_atomic,
 )
 from wsl_vla.octo.bridge import (
-    OCTO_GIT_REVISION,
     assert_zero_adapter_equivalence,
     build_adapter_spec_and_factors,
-    load_research_octo,
+    load_research_octo_from_config,
 )
 
 
@@ -99,7 +100,7 @@ def main() -> int:
     tasks = load_yaml(args.tasks)
     validate_research_config(config)
     validate_reference_tasks(tasks)
-    assert_installed_vcs_revision("octo", OCTO_GIT_REVISION)
+    require_environment_profile()
     assert_installed_vcs_revision("libero", LIBERO_GIT_REVISION)
 
     source_root = Path(args.continual_run)
@@ -135,12 +136,7 @@ def main() -> int:
     }
     if dataset_hashes != source["dataset_sha256"]:
         raise ValueError("component analysis data differs from continual training data")
-    bundle = load_research_octo(
-        args.checkpoint,
-        rank=int(config["adapter"]["rank"]),
-        alpha=float(config["adapter"]["alpha"]),
-        seed=seed,
-    )
+    bundle = load_research_octo_from_config(config, args.checkpoint, seed=seed)
     assert_zero_adapter_equivalence(bundle)
     if bundle.base_sha256 != source["base_sha256"]:
         raise ValueError("component analysis uses a different Octo base")
@@ -162,26 +158,12 @@ def main() -> int:
             raise ValueError("continual stage provenance differs from source manifest")
         stages.append((payload, metadata))
 
-    normalizations = {}
-    for task_id, data_file in zip(task_order, data_files):
-        dataset = StrictLiberoHDF5(
-            data_file,
-            require_wrist_camera=bool(config["data"]["require_wrist_camera"]),
-            required_proprio_keys=tuple(config["data"]["proprio_keys"]),
-        )
-        split = dataset.split(seed=int(config["data"]["split_seed"]))
-        normalizations[task_id] = ActionNormalization.fit(dataset.iter_episodes(split.train))
-
-    evaluator = LiberoRolloutEvaluator(
-        suite=suite,
-        expected_instructions=tasks["suites"][suite],
-        camera_size=(
-            int(config["simulator"]["camera_height"]),
-            int(config["simulator"]["camera_width"]),
-        ),
-        warmup_steps=int(config["simulator"]["warmup_steps"]),
-        max_steps=int(config["simulator"]["max_episode_steps"]),
-    )
+    # Every task shares the fixed controller-action convention; there are no
+    # per-task statistics to fit or to apply at rollout time.
+    normalizations = {
+        task_id: ActionNormalization.identity(bundle.action_convention) for task_id in task_order
+    }
+    evaluator = rollout_evaluator(bundle, config, suite, tasks["suites"][suite])
     task_index = {task_id: index for index, task_id in enumerate(task_order)}
     rollouts = int(
         config["continual_learning"][
@@ -228,13 +210,7 @@ def main() -> int:
     write_manifest_atomic(manifest, manifest_path)
 
     def rollout(state, task_id, count, rollout_seed):
-        normalization = normalizations[task_id]
-        policy = OctoLiberoPolicy(
-            bundle,
-            state,
-            action_mean=normalization.mean,
-            action_std=normalization.std,
-        )
+        policy = OctoLiberoPolicy(bundle, state)
         return evaluator.evaluate_task(
             policy,
             task_index=task_index[task_id],

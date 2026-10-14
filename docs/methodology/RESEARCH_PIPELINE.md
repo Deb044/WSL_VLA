@@ -1,147 +1,267 @@
-# Official Methodology 1 Research Pipeline
+# Research Pipeline Contracts
+
+This document describes the data and model contracts of the corrected
+Octo-Small zoo and alignment pipeline. For the execution order see
+`METHODOLOGY1_RUNBOOK.md`; for what has been run where, `IMPLEMENTATION_STATUS.md`.
 
 ## 1. Evidence boundary
 
-The functional subpackages under `wsl_vla/` are the primary publication path:
-`octo`, `adapters`, `alignment`, `data`, `evaluation`, and `experiments`. In particular,
-`scripts/eval/run_research_benchmark.py` is a deprecated legacy fixture despite its
-historical filename. Every legacy PyTorch command now requires `--smoke-test`,
-writes under `smoke_results/`, and marks artifacts as publication-ineligible.
-The custom analogue is isolated under `wsl_vla/smoke/legacy_torch`; it is not
-Octo-Small.
+The functional subpackages under `wsl_vla/` are the research path: `octo`,
+`adapters`, `alignment`, `data`, `evaluation`, and `experiments`. The legacy
+PyTorch commands require `--smoke-test`, write under `smoke_results/`, and mark
+their artifacts as ineligible; the custom analogue under
+`wsl_vla/smoke/legacy_torch` is not Octo-Small.
 
-The official path does not silently generate samples, download an unpinned base,
-reuse a task-specific latent during shared-policy evaluation, or report an
-offline regression score as robot success.
+The research path does not generate samples, download an unpinned base, reuse a
+task-specific latent during shared-policy evaluation, or report an offline
+regression score as robot success.
 
-Each suite data directory must contain `manifest.json` (schema 1) with ten
-ordered `{task_index, instruction, file}` entries. The preflight compares every
-instruction to `configs/reference_tasks.yaml`; filesystem enumeration is never
-used to infer task identity or order.
+**The experiment manifest is the sole source of counts.** Task selections,
+seeds, optimizer-update budget, snapshot stages, episode split, folds,
+alignment seeds, rollout budgets, and the expected sample counts live in
+`configs/research/manifests/<profile>.yaml`. `configs/research/base.yaml` holds
+only model, optimizer, preprocessing, and simulator settings. No trainer or
+validator contains a population size. A manifest's declared `expected` counts
+must equal the counts derived from its selections, or it is rejected.
+
+Each suite data directory contains `manifest.json` with ordered
+`{task_index, instruction, file}` entries. Instructions are compared with
+`configs/reference_tasks.yaml`; filesystem order never defines task identity.
+
+Artifacts are versioned individually (`wsl_vla/contracts.py`). Adapter specs,
+packed adapters, task evidence, zoo samples, alignment archives, and alignment
+checkpoints are at schema 2. Version-one artifacts raise `LegacyArtifactError`
+in every corrected command and are readable only through
+`scripts/reporting/inspect_legacy_artifacts.py`.
 
 ## 2. Model and adapter design
 
-`wsl_vla.octo.bridge.install_octo_modality_patch` replaces Octo's internal
-`BlockTransformer` before constructing the research model. It retains all
-official parameter paths and adds three rank-r residual updates after each
-transformer block:
+### Token-conditioned factorization
 
-- task/language tokens receive the language update;
-- observation/image tokens receive the vision update;
-- action readout tokens receive the action update.
+The proposal factorizes a VLA update into vision, language, and action
+components and assumes separate weights per component. Octo-Small has one
+shared transformer over a mixed token sequence, so the factorization here is
+*token-conditioned*: each transformer block owns three zero-initialized rank-r
+residuals, and a token only ever receives the residual of its own modality.
 
-The action component also includes external low-rank updates for every Dense
-kernel under the official diffusion action head. `wsl_vla/adapters/flax.py` discovers
-those paths from the loaded parameter tree and applies `down @ up` functionally,
-so gradients flow from diffusion loss to both the decoded head adapters and the
-action latent. Its up factors are zero-initialized for exact base equivalence.
+| Token group (octo-small-1.5) | Tokens | Route |
+| --- | --- | --- |
+| `obs_primary`, `obs_wrist` (image tokenizers) | 256 + 64 per timestep | vision |
+| `task_language`, `obs_task_language` (T5 tokens and their per-timestep repeat) | 16 each | language |
+| `readout_action` | 1 per timestep | action |
+| every 2-D kernel of the diffusion action head | - | action |
 
-The up-projection is initialized to zero. `verify_official_octo.py` loads the
-unmodified and patched models, merges official weights by path and shape, and
-requires their transformer and deterministic diffusion-head output trees to
-match within absolute tolerance `1e-6` before any experiment can proceed.
+The routing table is derived from the checkpoint configuration
+(`build_token_routing`). A `LowdimObsTokenizer` group (proprioception) is
+routed to `frozen` and receives no residual; a tokenizer of unknown type is an
+error, never labelled "vision". octo-small-1.5 has no proprioception tokenizer,
+and the pipeline records `proprio_consumed: false`; a checkpoint that does
+consume proprioception is rejected because no shared preprocessing exists for
+it. `verify_official_octo.py` reads the routing back from the live graph.
 
-`wsl_vla/octo/training.py` exposes the official diffusion loss as a function of adapter
-state only. Frozen parameters are closed over rather than merely assigned a
-zero learning rate, preventing accidental base-model updates.
+### Placement
 
-Raw LoRA factors are not comparable across runs because their rank basis may
-rotate. `packing.py` therefore computes the effective dense update and slices it
-row-wise into fixed-width windows. Every token carries component, layer,
-parameter-entry, and row metadata. Padding is masked in reconstruction and
-alignment losses.
+Residuals are added to the **input** of each block, and all three are computed
+from that same block input, so the branches do not depend on evaluation order.
+The previous post-block placement left the final-layer vision and language
+residuals with no path to the action readout: after the last block only a
+token-wise LayerNorm remains, so those adapters received exactly zero gradient
+and stayed zero in every version-one zoo sample.
 
-For generated adapters, `wsl_vla/adapters/latent.py` reverses those windows in JAX and
-applies the decoded effective updates through separate zero-initialized dense
-injection paths. These paths are frozen during low-rank zoo training and avoid
-an unstable SVD or an arbitrary factor basis. Consequently the official
-diffusion task loss remains connected to decoded visual, language, and action
-latents during refinement. `assert_task_loss_gradients` is a mandatory gate and
-deliberately fails for a detached decoder.
+`up` kernels are initialized to zero. The patched model is therefore
+functionally identical to the official one before adaptation.
+`assert_zero_adapter_equivalence` checks transformer outputs **and** sampled
+actions drawn with the identical random key, against references captured
+before the patch was installed, in true float32, with tolerance `1e-5`.
+`assert_base_parameters_unchanged` re-hashes the pretrained tree after training
+and after every adapter reload.
 
-## 3. Population sample contract
+Octo instantiates its block transformer from a module global. The adapter
+identity (rank, scale, routing) is written into the research module's
+configuration, each bundle re-installs its own patched class before tracing,
+and a module traced under a different patch fails loudly.
 
-Each sample directory must contain:
+### Identities recorded independently
 
-### `adapter.npz`
+`ResearchOctoBundle.identity()` records the checkpoint revision and parameter
+hash, the architecture hash (configuration plus parameter and example-batch
+structure, no values), the preprocessing hash, the controller-action
+convention hash, the token routing, the consumed observations, and the hashes
+of the frozen feature extractors.
 
-Created by `save_packed_adapter` and containing only non-pickled numeric arrays:
+### Controller actions
 
-- `tokens`, `mask`;
-- `component_ids`, `layer_ids`, `entry_ids`, `row_ids`, `column_offsets`;
-- `factor_down_NNNN`, `factor_up_NNNN` for exact checkpoint reload;
-- UTF-8 JSON bytes for the complete `AdapterSpec` and per-sample task, suite,
-  seed, checkpoint stage/fraction, and source dtype metadata.
+One convention, `libero_osc_pose_delta_v1`, is fixed for every zoo task:
+identity policy normalization in OSC_POSE controller coordinates, bounds
+`[-1, 1]`, gripper `-1` open and `+1` close, the same dimension order in
+demonstrations and rollouts. Training targets are validated against the
+bounds and never clipped; a demonstration outside the bounds is an error.
+The diffusion head's own clamp (`max_action = 5`) is checked to preserve every
+valid target. At deployment each sampled command is clipped to the controller
+bounds and the clipping frequency is recorded per episode.
 
-### `evidence.npz`
+Because normalization is identical for all tasks, adapters from different tasks
+live in one output space and a generated adapter needs no task statistics.
 
-- `vision_features [samples, feature_dim]`: frozen Octo image-tokenizer features;
-- `vision_mask [samples]`;
-- `language_features [feature_dim]`: masked official Octo language features;
-- `action_statistics [feature_dim]`: normalized mean, standard deviation,
-  velocity, and jerk statistics.
+### Shared preprocessing
 
-The evidence artifact also stores the exact training episode IDs,
-preprocessing version, and raw dataset/base references.
+`wsl_vla/data/preprocessing.py` builds every model input - camera frames, the
+history window, the language task, the action chunk, all padding masks - for
+training batches, evidence extraction, and the rollout policy alike. Its
+identity (`PreprocessingSpec.sha256()`) covers the cameras, the 128 x 128
+source resolution rendered by both demonstrations and rollouts, the resize
+method, the orientation handling, the number of executed actions per plan, and
+the tokenizer's output on fixed probe instructions.
 
-### `metadata.json`
+LIBERO demonstrations record the robosuite image convention they were
+generated with (`opengl`: rows stored bottom-up). `image_transform:
+flip_vertical` presents upright frames to the checkpoint.
+`simulator_alignment: identity` states that the simulator renders in the
+demonstrations' storage orientation; the rollout evaluator asserts the
+simulator's declared convention, and `verify_camera_orientation.py` measures
+it by re-rendering recorded demonstration states.
 
-Required fields are `schema_version`, `task_id`, `suite`, `seed`,
-`checkpoint_fraction`, `base_sha256`, `split`, and `synthetic`. Research assembly
-requires schema 1, `synthetic=false`, one shared base hash, one adapter schema,
-and a split of either `train` or `validation`.
+### Packing
 
-`extract_research_evidence.py` creates evidence from the frozen official Octo
-image and language tokenizers and complete real trajectories.
-`train_research_zoo.py` verifies zero-adapter equivalence, updates adapter state
-through the official diffusion loss with micro-batch accumulation, and saves
-the three locked late checkpoints. Legacy `.pt` zoo commands cannot write
-publication artifacts.
+Raw LoRA factors are not comparable across runs because their rank basis can
+rotate. `packing.py` computes each effective dense update
+`(alpha / rank) * down @ up` and slices it row-wise into tokens of width 384.
+The layout carries, per token, the component, layer (head kernels are numbered
+after the blocks), parameter entry, row, and column-window identity, and groups
+tokens into fixed sequence windows of 128: 20,012 tokens in 157 windows
+(36 vision, 36 language, 85 action) for octo-small-1.5. Windows are padded and
+masked, and the complete sequence is restored deterministically.
+
+## 3. Zoo sample contract
+
+One independent run trains one task with one seed from the shared base and
+writes, under `population/<suite>/<task>/seed_<s>/`:
+
+- `run.json`: completion flag, failures, counters, history, resource use,
+  provenance, gate results;
+- `update_<n>/adapter.npz`: tokens, layout arrays, the factors for exact
+  reload, the `AdapterSpec`, and per-sample metadata, all without pickle;
+- `update_<n>/metadata.json`: identities and hashes, optimizer updates, micro
+  steps, sample exposure, effective update norms per component, held-out loss,
+  the open-loop sampling check, and the validation status;
+- `update_<n>/behaviour.json`: written later by `evaluate_zoo_behaviour.py`.
+
+Counters are kept apart: *optimizer updates* (parameter updates), *micro steps*
+(gradient evaluations), and *sample exposure* (training windows consumed).
+`sample_exposure = micro_steps x micro_batch_size`.
+
+The resume state (optimizer moments, noise counter, dataset cursor) is stored
+in `zoo_resume/`, never beside the snapshots, and is accepted only for the
+identical run identity.
+
+A sample is *structurally valid* when it reloads and its tokens equal the
+effective update of its factors. It is *behaviourally evaluated* only when
+paired frozen-base versus adapter rollouts exist. Runs that fail or perform
+poorly keep their directory, history, and failure record.
+
+### Evidence
+
+`evidence/<suite>/<task>.npz` is extracted once per task from the training
+episodes of the manifest's episode split, with frozen Octo tokenizers:
+
+- `vision_features [frames, 1024]` with the episode index and timestep of each
+  frame (per camera, the masked mean of the current timestep's image tokens;
+  primary and wrist concatenated);
+- `language_features [16, 768]` with the tokenizer attention mask;
+- `action_chunk_features [episodes, chunks, 56]` with a mask: per episode,
+  non-overlapping action chunks, each summarized by the mean and standard
+  deviation of the commands and of their first, second, and third differences.
+  These are **command differences**, not physical velocity or jerk. Chunks
+  never cross an episode boundary and padded steps are never used.
+
+The file records episode ids, feature-extractor hashes, preprocessing and
+action-convention identities, and the base, architecture, and dataset hashes.
+Visual aggregation and the evidence projectors are trained during alignment,
+not here.
 
 ## 4. Alignment and mapping
 
-`build_alignment_archive.py` verifies all population samples and produces a
-single no-pickle NPZ. It requires an explicit held-out suite, rejects any sample
-from that suite, derives the calibration split from locked task indices, and
-requires all 270 samples from the other three suites. `train_research_alignment.py`
-jointly optimizes:
+### Archive
 
-- masked effective-update reconstruction;
-- a shared token autoencoder with component/layer/position embeddings;
-- trainable DeepSets visual evidence;
-- language and action projectors;
-- modality-specific learned temperatures;
-- symmetric multi-positive InfoNCE keyed by task identity;
-- auxiliary task classification from every evidence encoder.
+`build_alignment_archive.py --fold <fold>` re-checks every adapter and evidence
+hash (not only in an optional validator), requires every manifest sample of
+the fold, rejects any task of the held-out suite, and keeps all seeds and
+snapshots of a task in one split. It fits evidence standardization and the
+per-entry RMS scales on **training tasks only**; constant features keep unit
+scale. Tokens are stored as memory-mapped shards indexed by
+`archive_manifest.json`; evidence is stored once per task. The archive is built
+in a staging directory and renamed into place.
 
-Every contrastive batch contains at least two task identities and two adapter
-samples per identity. Optimizer accumulation is not treated as extra negatives.
+### Model
 
-The best validation checkpoint is used to fit one linear ridge mapper per
-modality. Ridge strength is chosen only on validation tasks. Empirical token
-centres and radii are estimated from training latents and saved beside the
-mapper. The unseen suite is never accepted into these archives.
-The checkpoint includes `token_layout.npz`; `wsl_vla/alignment/checkpoint.py` reloads
-the complete system, maps evidence, projects each modality to its empirical
-per-token shell, decodes the combined sequence, and refines it through official
-Octo diffusion loss.
-The reconstruction-only control is trained with the identical command and
-`--contrastive-weight 0`; held-out retrieval and mapper quality must pass
-`alignment_advantage_gate` before the aligned checkpoint advances. Run the
-executable gate against the exact archive used by both checkpoints:
+Separate modality streams are processed by one shared windowed transformer
+encoder and one transformer decoder. Tokens carry component, layer, parameter
+entry, row, and column-position embeddings. Reconstruction targets are divided
+by the training-only per-entry RMS scale (with a floor); the masked squared
+error is averaged within each component and then equally across components.
+The scales are stored in the checkpoint and inverted before any update reaches
+a policy.
 
-```bash
-python scripts/eval/run_alignment_advantage_gate.py artifacts/fold/archive.npz \
-  --aligned-checkpoint artifacts/fold/aligned \
-  --reconstruction-checkpoint artifacts/fold/reconstruction_only \
-  --output artifacts/fold/alignment_advantage.json
-```
+The contrastive loss is token-wise, bidirectional, and multi-positive: every
+weight token and every evidence token of the same task is a positive, padding
+is excluded in both directions, and each modality has a learned temperature.
+`tests/unit/test_alignment/test_losses.py` checks it against an explicit small
+reference calculation. Evidence encoders are trained jointly with auxiliary
+classifiers over **training-task** identities only.
 
-The gate reads only the locked validation tasks, reports retrieval and complete
-latent-sequence mapper MSE for every modality, and applies a predeclared macro
-decision: aligned retrieval must be strictly higher and aligned mapper MSE must
-be strictly lower. A failed comparison is still written to JSON and exits
-non-zero so the negative result is retained while later scaling is stopped.
+### The paired comparison
+
+Two conditions are trained: `aligned` and `reconstruction_only`. They share
+architecture, initialization, batch schedule, optimizer exposure, evidence
+classification, and checkpoint selection by validation reconstruction. The
+control differs only in that its contrastive weight is zero.
+`assert_paired_checkpoints` verifies this from recorded fingerprints before any
+comparison is computed; a violation is an integrity failure.
+
+Batches hold six distinct tasks with two adapter samples each where the fold
+allows it (two tasks in the integrity run). Gradient accumulation changes
+optimizer exposure only; the contrastive negative set is always the tasks of
+one micro-batch.
+
+The checkpoint stores the fully resolved configuration. Command-line overrides
+take precedence over configuration values, and there are no architecture
+defaults in code.
+
+### Mapping, shells, deployment
+
+Ridge mappers go from task evidence to complete latent sequences. Seed and
+snapshot targets are averaged within each training task first, so every task
+counts once; ridge strength is selected on validation tasks only. Shell
+statistics come from training latents only, and mapped latents are evaluated
+both before and after shell projection.
+
+Deployment is rank-matched. Each decoded update is projected to its entry's
+maximum rank with a truncated SVD and exported as factors that load through
+the same low-rank path as a zoo adapter. The projection error is reported.
+Unrestricted dense updates remain available as a diagnostic and for latent
+refinement, but they are not part of the primary comparison.
+
+### Evaluation
+
+There is no gate that alignment must win. `evaluate_alignment_pair.py` exits
+non-zero only on an integrity failure. Every comparison is labelled
+`supports_first_condition`, `inconclusive`, or `negative_finding` from the
+confidence interval of the task-paired difference.
+
+Reported offline: task-balanced reconstruction error, mapped decoded-update
+error, rank-projection error, latent prediction error relative to a
+training-mean predictor, and evidence-to-mapped-latent retrieval against
+task-balanced galleries with the chance level. A normalized metric with a zero
+denominator is undefined. Direct weight-to-evidence cosine retrieval is
+reported as a descriptive diagnostic only.
+
+Reported from rollouts, on identical initial states and action-sampling seeds:
+the frozen base, the independently trained zoo adapter, the autoencoder
+reconstruction and the mapper-generated adapter of both conditions, the
+nearest-neighbour adapter, and the training-mean adapter. Episode-level
+outcomes, task-balanced success rates, paired differences, and intervals from a
+two-level bootstrap over tasks and training runs are stored. Validation and
+held-out results are separate; a held-out result freezes the manifest.
 
 ## 5. Sequential evaluation contract
 
@@ -162,26 +282,33 @@ vision, language, action, combined vision-language, and full swaps. Drift versus
 success-rate drop uses both Pearson and Spearman coefficients with bootstrap
 95% confidence intervals and the actual sample count.
 
-## 6. Scaling gates
+## 6. Downstream study (not exercised by the pipeline repair)
 
-1. Unit tests and static checks.
-2. Official Octo zero-adapter equivalence.
-3. One-task real-data learning above the frozen-base success rate.
-4. Two-task shared-state smoke run with a complete `2×2` success matrix.
-5. One ten-task suite, three seeds, 20 rollouts per cell.
-6. Four leave-one-suite-out folds, three seeds, 50 rollouts per cell.
-7. Large-VLA confirmation after cluster resources become available.
+The sections above are covered by tests and by the integrity run. The
+continual-learning, OOD, and probe stages below were re-pointed at the
+corrected artifacts and their commands are checked against each script's
+argument parser, but they have not been executed on corrected artifacts.
 
-A failed gate stops later compute. Negative scientific outcomes are retained in
-the records and reported; they are not filtered out of the final analysis.
+1. Unit tests and the run-profile gates of the runbook.
+2. One-task real-data learning with deterministic repeated rollouts.
+3. Two-task shared-state run with a complete `2×2` success matrix.
+4. One ten-task suite, three seeds, 20 rollouts per cell.
+5. Four leave-one-suite-out folds, three seeds, 50 rollouts per cell.
+6. Large-VLA confirmation after cluster resources become available.
 
-After all 96 continual runs (four suites × three seeds × eight conditions)
-finish, the complete study is validated and summarized with:
+A failed *integrity* gate stops later compute. Scientific outcomes, including
+negative ones, are retained in the records and reported; they never stop the
+pipeline and are never filtered out of the final analysis.
+
+After all continual runs (four suites × seeds × eight conditions) finish, the
+complete study is validated and summarized. Paths are those planned by
+`plan_methodology1_jobs.py` inside the experiment directory:
 
 ```bash
-python scripts/reporting/report_publication_study.py research_results/continual/ten_task_study \
-  --output-json research_results/reports/continual_study.json \
-  --output-parquet research_results/reports/continual_records.parquet
+STUDY=research_results/experiments/full/methodology1/publication
+python scripts/reporting/report_publication_study.py $STUDY/continual/ten_task_study \
+  --output-json $STUDY/reports/continual_study.json \
+  --output-parquet $STUDY/reports/continual_records.parquet
 ```
 
 This command rejects missing cells, mixed run identities, inconsistent rollout
@@ -197,7 +324,7 @@ task `k` was first learned, or until the original training budget is exhausted:
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
 python scripts/eval/run_recovery_probe.py \
-  research_results/continual/ten_task_study/libero_spatial/seed_17/sequential_no_regularization
+  $STUDY/continual/ten_task_study/libero_spatial/seed_17/sequential_no_regularization
 ```
 
 The fixed curve grid is dense below 10% of the original budget and uses the
@@ -209,7 +336,7 @@ run's learning rate, batch size, and optimizer accumulation and currently
 accepts LoRA-space continual runs only; latent-space recovery must not be
 misreported as the same optimization protocol.
 
-Gate 3 is executable as:
+Gate 2 is executable as:
 
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
@@ -219,11 +346,11 @@ python scripts/eval/run_one_task_learning_gate.py \
 
 It evaluates the frozen base twice and the trained adapter twice with identical
 official LIBERO initialization indices and rollout seeds. It persists all
-episode outcomes and the reloadable trained adapter, and advances only when
-both repetitions are deterministic and the adapted success rate is strictly
-higher than the frozen-base rate.
+episode outcomes and the reloadable trained adapter. The gate passes when both
+repetitions are deterministic; whether the adapter beat the frozen base is
+recorded as a finding (`improved`) and does not decide the exit status.
 
-Gate 4 reuses the production continual runner but is explicitly separated from
+Gate 3 reuses the production continual runner but is explicitly separated from
 the ten-task study output:
 
 ```bash

@@ -1,3 +1,7 @@
+# Superseded: kept for reference only, read by no code.
+# Folds, validation tasks, and held-out tasks of an experiment are defined in
+# its manifest (configs/research/manifests/*.yaml), which is the sole source of
+# task selections and counts.
 schema_version: 1
 folds:
   - name: holdout_libero_spatial

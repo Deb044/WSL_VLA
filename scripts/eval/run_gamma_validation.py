@@ -26,12 +26,19 @@ REPO_ROOT = _find_repo_root()
 sys.path.insert(0, str(REPO_ROOT))
 
 from wsl_vla.alignment.checkpoint import encode_and_map_evidence, load_alignment_checkpoint
-from wsl_vla.alignment.evidence_io import load_task_evidence
-from wsl_vla.contracts import AdapterSpec, RunManifest
-from wsl_vla.data.libero import StrictLiberoHDF5, load_suite_manifest
-from wsl_vla.data.octo_batches import ActionNormalization
-from wsl_vla.data.streams import TaskTrainingStream, make_octo_batch_factory
-from wsl_vla.evaluation.libero_rollout import LiberoRolloutEvaluator, OctoLiberoPolicy
+from wsl_vla.contracts import RunManifest
+from wsl_vla.data.libero import load_suite_manifest
+from wsl_vla.data.streams import make_octo_batch_factory
+from wsl_vla.evaluation.libero_rollout import OctoLiberoPolicy
+from wsl_vla.experiments.manifest import split_task_id
+from wsl_vla.experiments.runtime import (
+    evidence_nbytes,
+    load_checked_task_evidence,
+    rollout_evaluator,
+    task_streams_from_config,
+    validate_alignment_checkpoint_for_run,
+)
+from wsl_vla.octo.compat import require_environment_profile
 from wsl_vla.evaluation.metrics import continual_learning_metrics
 from wsl_vla.evaluation.records import append_evaluation_record, records_to_success_matrix
 from wsl_vla.evaluation.sequential import StageUpdate, run_sequential_protocol
@@ -56,10 +63,9 @@ from wsl_vla.experiments.provenance import (
     write_manifest_atomic,
 )
 from wsl_vla.octo.bridge import (
-    OCTO_GIT_REVISION,
     assert_zero_adapter_equivalence,
     build_adapter_spec_and_factors,
-    load_research_octo,
+    load_research_octo_from_config,
 )
 from wsl_vla.octo.continual import train_shared_latent_stage
 from wsl_vla.octo.training import initial_adapter_state
@@ -98,32 +104,15 @@ def _parse_args():
 
 
 def _stream_pair(task_id, instruction, data_file, config, bundle):
-    dataset = StrictLiberoHDF5(
-        data_file,
-        require_wrist_camera=bool(config["data"]["require_wrist_camera"]),
-        required_proprio_keys=tuple(config["data"]["proprio_keys"]),
-    )
-    split = dataset.split(seed=int(config["data"]["split_seed"]))
-    training_episodes = tuple(dataset.iter_episodes(split.train))
-    validation_episodes = tuple(dataset.iter_episodes(split.validation))
-    if not validation_episodes:
-        raise ValueError("gamma early stopping requires validation episodes")
-    normalization = ActionNormalization.fit(training_episodes)
-    example = bundle.pretrained_model.example_batch
-    observation = example["observation"]
-    primary = np.asarray(observation["image_primary"])
-    common = dict(
+    streams = task_streams_from_config(
+        bundle,
         task_id=task_id,
         instruction=instruction,
-        normalization=normalization,
-        window_size=int(np.asarray(observation["timestep_pad_mask"]).shape[1]),
-        action_horizon=int(np.asarray(example["action"]).shape[-2]),
-        image_size=(int(primary.shape[-3]), int(primary.shape[-2])),
+        data_file=data_file,
+        config=config,
+        splits=("train", "validation"),
     )
-    return (
-        TaskTrainingStream(episodes=training_episodes, **common),
-        TaskTrainingStream(episodes=validation_episodes, **common),
-    )
+    return streams["train"], streams["validation"]
 
 
 def main() -> int:
@@ -142,7 +131,7 @@ def main() -> int:
     validate_reference_tasks(tasks)
     if args.seed not in config["evaluation"]["training_seeds"]:
         raise ValueError("seed is outside the locked three-seed protocol")
-    assert_installed_vcs_revision("octo", OCTO_GIT_REVISION)
+    require_environment_profile()
     assert_installed_vcs_revision("libero", LIBERO_GIT_REVISION)
     gammas = {
         "vision": float(args.gamma_vision),
@@ -163,13 +152,19 @@ def main() -> int:
 
     alignment = load_alignment_checkpoint(args.alignment_checkpoint)
     alignment_sha256 = sha256_directory(args.alignment_checkpoint)
-    if alignment.metadata.get("held_out_suite") != args.held_out_suite:
-        raise ValueError("alignment checkpoint belongs to another held-out fold")
-    if float(alignment.metadata.get("model", {}).get("contrastive_weight", 0)) <= 0:
-        raise ValueError("gamma validation requires the aligned latent checkpoint")
-    validation_indices = tuple(int(value) for value in alignment.metadata["validation_task_indices"])
-    if validation_indices != (8, 9):
-        raise ValueError("gamma validation requires locked source task indices 8 and 9")
+    # The fold's validation tasks come from the alignment checkpoint, which took
+    # them from the experiment manifest; no task index is hard-coded here.
+    validation_indices = tuple(
+        sorted(
+            split_task_id(identifier)[1]
+            for identifier in alignment.metadata["validation_task_ids"]
+            if split_task_id(identifier)[0] == args.source_suite
+        )
+    )
+    if not validation_indices:
+        raise ValueError(
+            f"alignment checkpoint has no validation tasks in source suite {args.source_suite}"
+        )
     instructions = tuple(tasks["suites"][args.source_suite][index] for index in validation_indices)
     task_ids = tuple(f"{args.source_suite}_{index}" for index in validation_indices)
     suite_files = load_suite_manifest(
@@ -179,19 +174,18 @@ def main() -> int:
     data_files = tuple(suite_files[index] for index in validation_indices)
     dataset_hashes = {task_id: sha256_file(path) for task_id, path in zip(task_ids, data_files)}
 
-    bundle = load_research_octo(
-        args.checkpoint,
-        rank=int(config["adapter"]["rank"]),
-        alpha=float(config["adapter"]["alpha"]),
-        seed=args.seed,
-    )
+    bundle = load_research_octo_from_config(config, args.checkpoint, seed=args.seed)
     assert_zero_adapter_equivalence(bundle)
-    adapter_spec = AdapterSpec.from_dict(alignment.metadata["adapter_spec"])
     runtime_spec, _ = build_adapter_spec_and_factors(
         bundle, token_width=int(config["adapter"]["token_width"])
     )
-    if adapter_spec != runtime_spec or bundle.base_sha256 != alignment.metadata["base_sha256"]:
-        raise ValueError("live Octo base/layout differs from alignment checkpoint")
+    adapter_spec = validate_alignment_checkpoint_for_run(
+        alignment,
+        held_out_suite=args.held_out_suite,
+        bundle=bundle,
+        runtime_spec=runtime_spec,
+        condition="aligned",
+    )
 
     max_steps = args.max_steps or int(config["continual_learning"]["train_steps_per_task"])
     batch_size = args.batch_size or int(config["continual_learning"]["micro_batch_size"])
@@ -253,15 +247,8 @@ def main() -> int:
     manifest_path = run_root / "manifest.json"
     write_manifest_atomic(manifest, manifest_path)
 
-    evaluator = LiberoRolloutEvaluator(
-        suite=args.source_suite,
-        expected_instructions=tasks["suites"][args.source_suite],
-        camera_size=(
-            int(config["simulator"]["camera_height"]),
-            int(config["simulator"]["camera_width"]),
-        ),
-        warmup_steps=int(config["simulator"]["warmup_steps"]),
-        max_steps=int(config["simulator"]["max_episode_steps"]),
+    evaluator = rollout_evaluator(
+        bundle, config, args.source_suite, tasks["suites"][args.source_suite]
     )
     normalizations = {}
     update_steps = {}
@@ -280,39 +267,28 @@ def main() -> int:
             task_id=task_id,
             task_index=validation_indices[local_stage],
         )
-        evidence = load_task_evidence(Path(args.evidence_root) / relative)
-        if evidence.task_id != task_id or evidence.suite != args.source_suite:
-            raise ValueError("gamma-validation evidence identity mismatch")
-        if evidence.vision_mask is None:
-            raise ValueError("gamma-validation visual evidence requires a mask")
-        if evidence.raw_feature_references.get("dataset_sha256") != dataset_hashes[task_id]:
-            raise ValueError("gamma-validation evidence uses different task data")
-        if evidence.raw_feature_references.get("base_sha256") != bundle.base_sha256:
-            raise ValueError("gamma-validation evidence uses a different Octo base")
-        if evidence.episode_ids != tuple(item.episode_id for item in train_stream.episodes):
-            raise ValueError("gamma-validation evidence uses different training episodes")
+        evidence = load_checked_task_evidence(
+            Path(args.evidence_root) / relative,
+            task_id=task_id,
+            suite=args.source_suite,
+            dataset_sha256=dataset_hashes[task_id],
+            bundle=bundle,
+            episode_ids=train_stream.episode_ids,
+        )
         initial_latents = previous.latents
         if initial_latents is None:
-            initial_latents = encode_and_map_evidence(
-                alignment,
-                vision_features=evidence.vision_features,
-                vision_mask=evidence.vision_mask,
-                language_features=evidence.language_features,
-                action_features=evidence.action_statistics,
-            )
+            initial_latents = encode_and_map_evidence(alignment, evidence)
         train_factory = make_octo_batch_factory(
             train_stream,
             batch_size=batch_size,
             seed=args.seed * 100 + local_stage,
             text_processor=bundle.pretrained_model.text_processor,
-            example_batch=bundle.pretrained_model.example_batch,
         )
         validation_factory = make_octo_batch_factory(
             validation_stream,
             batch_size=batch_size,
             seed=args.seed * 100 + local_stage + 50_000,
             text_processor=bundle.pretrained_model.text_processor,
-            example_batch=bundle.pretrained_model.example_batch,
         )
         train_key = jax.random.PRNGKey(args.seed * 100 + local_stage)
         validation_key = jax.random.PRNGKey(args.seed * 100 + local_stage + 50_000)
@@ -347,15 +323,7 @@ def main() -> int:
             early_stopping_min_delta=args.early_stopping_min_delta,
         )
         update_steps[local_stage] = result.update_steps
-        evidence_size = sum(
-            int(np.asarray(value).nbytes)
-            for value in (
-                evidence.vision_features,
-                evidence.vision_mask,
-                evidence.language_features,
-                evidence.action_statistics,
-            )
-        )
+        evidence_size = evidence_nbytes(evidence)
         return StageUpdate(
             state=ValidationPolicyState(result.adapter_state, result.latents),
             checkpoint_sha256=result.checkpoint_sha256,
@@ -375,12 +343,7 @@ def main() -> int:
 
     def rollout(state, task_id, count, rollout_seed):
         normalization = normalizations[task_id]
-        policy = OctoLiberoPolicy(
-            bundle,
-            state.adapter_state,
-            action_mean=normalization.mean,
-            action_std=normalization.std,
-        )
+        policy = OctoLiberoPolicy(bundle, state.adapter_state)
         return evaluator.evaluate_task(
             policy,
             task_index=global_task_index[task_id],

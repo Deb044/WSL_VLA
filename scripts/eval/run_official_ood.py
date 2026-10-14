@@ -25,19 +25,19 @@ def _find_repo_root() -> Path:
 REPO_ROOT = _find_repo_root()
 sys.path.insert(0, str(REPO_ROOT))
 
-from wsl_vla.adapters.latent import effective_updates_to_state, unpack_effective_tokens_jax
+from wsl_vla.adapters.latent import factors_to_state
 from wsl_vla.alignment.checkpoint import (
-    decode_alignment_latents,
+    compose_latent_sequence,
+    decode_latent_sequence,
     encode_and_map_evidence,
     encode_evidence_prompts,
     load_alignment_checkpoint,
+    rank_matched_updates,
 )
-from wsl_vla.alignment.evidence_io import load_task_evidence
 from wsl_vla.contracts import AdapterSpec, RunManifest
-from wsl_vla.data.libero import StrictLiberoHDF5, load_suite_manifest
-from wsl_vla.data.octo_batches import ActionNormalization
+from wsl_vla.data.libero import load_suite_manifest
 from wsl_vla.data.streams import TaskTrainingStream, make_octo_batch_factory
-from wsl_vla.evaluation.libero_rollout import LiberoRolloutEvaluator, OctoLiberoPolicy
+from wsl_vla.evaluation.libero_rollout import OctoLiberoPolicy
 from wsl_vla.evaluation.ood import OOD_METHODS, OODCandidate, run_ood_protocol
 from wsl_vla.evaluation.ood_bank import load_reference_bank
 from wsl_vla.evaluation.records import append_ood_evaluation_record
@@ -58,12 +58,19 @@ from wsl_vla.experiments.provenance import (
     sha256_file,
     write_manifest_atomic,
 )
+from wsl_vla.experiments.runtime import (
+    evidence_nbytes,
+    load_checked_task_evidence,
+    rollout_evaluator,
+    task_streams_from_config,
+    validate_alignment_checkpoint_for_run,
+)
 from wsl_vla.octo.bridge import (
-    OCTO_GIT_REVISION,
     assert_zero_adapter_equivalence,
     build_adapter_spec_and_factors,
-    load_research_octo,
+    load_research_octo_from_config,
 )
+from wsl_vla.octo.compat import require_environment_profile
 from wsl_vla.octo.continual import train_shared_latent_stage, train_shared_lora_stage, tree_nbytes
 
 
@@ -82,32 +89,19 @@ def _atomic_bytes(path: Path, payload: bytes) -> None:
 
 
 def _task_stream(task_id, instruction, data_file, config, bundle) -> TaskTrainingStream:
-    dataset = StrictLiberoHDF5(
-        data_file,
-        require_wrist_camera=bool(config["data"]["require_wrist_camera"]),
-        required_proprio_keys=tuple(config["data"]["proprio_keys"]),
-    )
-    split = dataset.split(seed=int(config["data"]["split_seed"]))
-    episodes = tuple(dataset.iter_episodes(split.train))
-    normalization = ActionNormalization.fit(episodes)
-    example = bundle.pretrained_model.example_batch
-    observation = example["observation"]
-    primary = np.asarray(observation["image_primary"])
-    return TaskTrainingStream(
-        task_id=task_id,
-        instruction=instruction,
-        episodes=episodes,
-        normalization=normalization,
-        window_size=int(np.asarray(observation["timestep_pad_mask"]).shape[1]),
-        action_horizon=int(np.asarray(example["action"]).shape[-2]),
-        image_size=(int(primary.shape[-3]), int(primary.shape[-2])),
-    )
+    return task_streams_from_config(
+        bundle, task_id=task_id, instruction=instruction, data_file=data_file, config=config
+    )["train"]
 
 
 def _decoded_state(checkpoint, bundle, adapter_spec: AdapterSpec, latents):
-    decoded = decode_alignment_latents(checkpoint, latents)
-    updates = unpack_effective_tokens_jax(decoded, checkpoint.token_mask, adapter_spec)
-    return effective_updates_to_state(bundle, adapter_spec, updates)
+    """Rank-matched deployment of decoded latents (see wsl_vla/adapters/rank.py)."""
+
+    tokens = np.asarray(
+        decode_latent_sequence(checkpoint, compose_latent_sequence(checkpoint, latents))
+    )
+    projection = rank_matched_updates(checkpoint, tokens)
+    return factors_to_state(bundle, adapter_spec, projection.factors)
 
 
 def _save_candidate(root: Path, *, task_id: str, method: str, state, metadata) -> None:
@@ -173,7 +167,7 @@ def main() -> int:
     validate_reference_tasks(tasks)
     if args.seed not in config["evaluation"]["training_seeds"]:
         raise ValueError("seed is outside the locked three-seed protocol")
-    assert_installed_vcs_revision("octo", OCTO_GIT_REVISION)
+    environment_profile = require_environment_profile()
     assert_installed_vcs_revision("libero", LIBERO_GIT_REVISION)
 
     suite_tasks = tuple(tasks["suites"][args.suite])
@@ -183,11 +177,7 @@ def main() -> int:
     dataset_hashes = {task_id: sha256_file(path) for task_id, path in zip(task_ids, data_files)}
     alignment = load_alignment_checkpoint(args.alignment_checkpoint)
     alignment_sha256 = sha256_directory(args.alignment_checkpoint)
-    if alignment.metadata.get("held_out_suite") != args.suite:
-        raise ValueError("alignment checkpoint belongs to another held-out suite")
-    if float(alignment.metadata.get("model", {}).get("contrastive_weight", 0)) <= 0:
-        raise ValueError("primary OOD evaluation requires the aligned checkpoint")
-    adapter_spec = AdapterSpec.from_dict(alignment.metadata["adapter_spec"])
+    adapter_spec = alignment.adapter_spec
 
     bank_artifact = load_reference_bank(args.reference_bank)
     bank = bank_artifact.bank
@@ -195,24 +185,26 @@ def main() -> int:
         raise ValueError("OOD reference bank belongs to another held-out suite")
     if bank_artifact.alignment_checkpoint_sha256 != alignment_sha256:
         raise ValueError("OOD reference bank was built with another alignment checkpoint")
-    if bank_artifact.base_sha256 != alignment.metadata["base_sha256"]:
+    if bank_artifact.base_sha256 != alignment.metadata["shared"]["base_sha256"]:
         raise ValueError("OOD reference bank and alignment checkpoint use different bases")
     expected_sources = tuple(sorted(set(REQUIRED_SUITES) - {args.suite}))
     if bank.training_suites != expected_sources:
         raise ValueError("OOD reference bank does not contain the exact three source suites")
 
-    bundle = load_research_octo(
-        args.checkpoint,
-        rank=int(config["adapter"]["rank"]),
-        alpha=float(config["adapter"]["alpha"]),
-        seed=args.seed,
-    )
+    bundle = load_research_octo_from_config(config, args.checkpoint, seed=args.seed)
     assert_zero_adapter_equivalence(bundle)
     runtime_spec, _ = build_adapter_spec_and_factors(
         bundle, token_width=int(config["adapter"]["token_width"])
     )
-    if runtime_spec != adapter_spec or bundle.base_sha256 != bank_artifact.base_sha256:
-        raise ValueError("live Octo adapter layout/base differs from OOD artifacts")
+    validate_alignment_checkpoint_for_run(
+        alignment,
+        held_out_suite=args.suite,
+        bundle=bundle,
+        runtime_spec=runtime_spec,
+        condition="aligned",
+    )
+    if bundle.base_sha256 != bank_artifact.base_sha256:
+        raise ValueError("live Octo base differs from OOD artifacts")
 
     run_id = f"ood-{args.suite}-{args.seed}-{uuid.uuid4().hex[:12]}"
     run_root = Path(args.output_root) / args.suite / f"seed_{args.seed}"
@@ -256,6 +248,9 @@ def main() -> int:
             "rollouts_per_method_task": rollouts,
             "alignment_checkpoint_sha256": alignment_sha256,
             "reference_bank_sha256": sha256_file(args.reference_bank),
+            "environment_profile": environment_profile,
+            "bundle": bundle.identity(),
+            "deployment": "decoded updates are projected to the adapter rank before use",
         },
         hardware=capture_hardware(),
         environment=capture_environment(("jax", "flax", "optax", "octo", "libero")),
@@ -263,16 +258,7 @@ def main() -> int:
     manifest_path = run_root / "manifest.json"
     write_manifest_atomic(manifest, manifest_path)
 
-    evaluator = LiberoRolloutEvaluator(
-        suite=args.suite,
-        expected_instructions=suite_tasks,
-        camera_size=(
-            int(config["simulator"]["camera_height"]),
-            int(config["simulator"]["camera_width"]),
-        ),
-        warmup_steps=int(config["simulator"]["warmup_steps"]),
-        max_steps=int(config["simulator"]["max_episode_steps"]),
-    )
+    evaluator = rollout_evaluator(bundle, config, args.suite, suite_tasks)
     task_index = {task_id: index for index, task_id in enumerate(task_ids)}
     cached_id = None
     cached_stream = None
@@ -294,46 +280,22 @@ def main() -> int:
             suite=args.suite, task_id=task_id, task_index=index
         )
         evidence_path = Path(args.evidence_root) / relative
-        evidence = load_task_evidence(evidence_path)
-        if evidence.task_id != task_id or evidence.suite != args.suite:
-            raise ValueError("OOD evidence identity differs from requested task")
-        if evidence.vision_mask is None:
-            raise ValueError("OOD visual evidence requires a validity mask")
-        if evidence.raw_feature_references.get("dataset_sha256") != dataset_hashes[task_id]:
-            raise ValueError("OOD evidence and run use different task data")
-        if evidence.raw_feature_references.get("base_sha256") != bundle.base_sha256:
-            raise ValueError("OOD evidence and run use different Octo bases")
-        if evidence.episode_ids != tuple(item.episode_id for item in stream.episodes):
-            raise ValueError("OOD evidence and adaptation use different train episodes")
-        mapped = encode_and_map_evidence(
-            alignment,
-            vision_features=evidence.vision_features,
-            vision_mask=evidence.vision_mask,
-            language_features=evidence.language_features,
-            action_features=evidence.action_statistics,
+        evidence = load_checked_task_evidence(
+            evidence_path,
+            task_id=task_id,
+            suite=args.suite,
+            dataset_sha256=dataset_hashes[task_id],
+            bundle=bundle,
+            episode_ids=stream.episode_ids,
         )
-        prompts = encode_evidence_prompts(
-            alignment,
-            vision_features=evidence.vision_features,
-            vision_mask=evidence.vision_mask,
-            language_features=evidence.language_features,
-            action_features=evidence.action_statistics,
-        )
+        mapped = encode_and_map_evidence(alignment, evidence)
+        prompts = encode_evidence_prompts(alignment, evidence)
         cached_id, cached_stream, cached_evidence = task_id, stream, evidence
         cached_mapped = mapped
         cached_prompts = {name: np.asarray(value) for name, value in prompts.items()}
         return cached_stream, cached_evidence, cached_mapped, cached_prompts
 
-    def evidence_bytes(evidence) -> int:
-        return sum(
-            int(np.asarray(value).nbytes)
-            for value in (
-                evidence.vision_features,
-                evidence.vision_mask,
-                evidence.language_features,
-                evidence.action_statistics,
-            )
-        )
+    evidence_bytes = evidence_nbytes
 
     def finish_candidate(task_id, method, state, *, steps=0, loss=None, evidence_size=0):
         host_state = jax.device_get(state)
@@ -378,7 +340,6 @@ def main() -> int:
             batch_size=batch_size,
             seed=seed,
             text_processor=bundle.pretrained_model.text_processor,
-            example_batch=bundle.pretrained_model.example_batch,
         )
         key = jax.random.PRNGKey(seed)
         counter = 0
@@ -418,7 +379,6 @@ def main() -> int:
             batch_size=batch_size,
             seed=seed,
             text_processor=bundle.pretrained_model.text_processor,
-            example_batch=bundle.pretrained_model.example_batch,
         )
         result = train_shared_lora_stage(
             bundle,
@@ -469,12 +429,7 @@ def main() -> int:
 
     def rollout(state: Mapping[str, Any], task_id: str, count: int, seed: int):
         stream, _, _, _ = task_inputs(task_id)
-        policy = OctoLiberoPolicy(
-            bundle,
-            state,
-            action_mean=stream.normalization.mean,
-            action_std=stream.normalization.std,
-        )
+        policy = OctoLiberoPolicy(bundle, state)
         return evaluator.evaluate_task(
             policy,
             task_index=task_index[task_id],

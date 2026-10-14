@@ -24,10 +24,11 @@ def _find_repo_root() -> Path:
 REPO_ROOT = _find_repo_root()
 sys.path.insert(0, str(REPO_ROOT))
 
-from wsl_vla.data.libero import StrictLiberoHDF5, load_suite_manifest
-from wsl_vla.data.octo_batches import ActionNormalization
-from wsl_vla.data.streams import TaskTrainingStream, make_octo_batch_factory
-from wsl_vla.evaluation.libero_rollout import LiberoRolloutEvaluator, OctoLiberoPolicy
+from wsl_vla.data.libero import load_suite_manifest
+from wsl_vla.data.streams import make_octo_batch_factory
+from wsl_vla.evaluation.libero_rollout import OctoLiberoPolicy
+from wsl_vla.experiments.runtime import rollout_evaluator, task_streams_from_config
+from wsl_vla.octo.compat import require_environment_profile
 from wsl_vla.evaluation.records import load_evaluation_records
 from wsl_vla.evaluation.recovery import (
     RecoveryCurvePoint,
@@ -50,9 +51,8 @@ from wsl_vla.experiments.provenance import (
     sha256_file,
 )
 from wsl_vla.octo.bridge import (
-    OCTO_GIT_REVISION,
     assert_zero_adapter_equivalence,
-    load_research_octo,
+    load_research_octo_from_config,
 )
 from wsl_vla.octo.continual import train_shared_lora_stage
 
@@ -73,26 +73,9 @@ def atomic_json(path: Path, payload: dict) -> None:
 
 
 def task_stream(*, task_id, instruction, data_file, config, bundle):
-    dataset = StrictLiberoHDF5(
-        data_file,
-        require_wrist_camera=bool(config["data"]["require_wrist_camera"]),
-        required_proprio_keys=tuple(config["data"]["proprio_keys"]),
-    )
-    split = dataset.split(seed=int(config["data"]["split_seed"]))
-    episodes = tuple(dataset.iter_episodes(split.train))
-    normalization = ActionNormalization.fit(episodes)
-    example = bundle.pretrained_model.example_batch
-    observation = example["observation"]
-    primary = np.asarray(observation["image_primary"])
-    return TaskTrainingStream(
-        task_id=task_id,
-        instruction=instruction,
-        episodes=episodes,
-        normalization=normalization,
-        window_size=int(np.asarray(observation["timestep_pad_mask"]).shape[1]),
-        action_horizon=int(np.asarray(example["action"]).shape[-2]),
-        image_size=(int(primary.shape[-3]), int(primary.shape[-2])),
-    )
+    return task_streams_from_config(
+        bundle, task_id=task_id, instruction=instruction, data_file=data_file, config=config
+    )["train"]
 
 
 def load_stage_adapter(run_root: Path, stage: int, *, bundle):
@@ -147,7 +130,7 @@ def main() -> int:
     tasks = load_yaml(args.tasks)
     validate_research_config(config)
     validate_reference_tasks(tasks)
-    assert_installed_vcs_revision("octo", OCTO_GIT_REVISION)
+    require_environment_profile()
     assert_installed_vcs_revision("libero", LIBERO_GIT_REVISION)
     run_root = Path(args.continual_run)
     manifest_path = run_root / "manifest.json"
@@ -178,25 +161,11 @@ def main() -> int:
     if any(item.run_id != manifest["run_id"] for item in records):
         raise ValueError("continual records and manifest use different run identities")
 
-    bundle = load_research_octo(
-        args.checkpoint,
-        rank=int(config["adapter"]["rank"]),
-        alpha=float(config["adapter"]["alpha"]),
-        seed=seed,
-    )
+    bundle = load_research_octo_from_config(config, args.checkpoint, seed=seed)
     assert_zero_adapter_equivalence(bundle)
     if bundle.base_sha256 != manifest["base_sha256"]:
         raise ValueError("continual run and live Octo use different base checkpoints")
-    evaluator = LiberoRolloutEvaluator(
-        suite=suite,
-        expected_instructions=suite_tasks,
-        camera_size=(
-            int(config["simulator"]["camera_height"]),
-            int(config["simulator"]["camera_width"]),
-        ),
-        warmup_steps=int(config["simulator"]["warmup_steps"]),
-        max_steps=int(config["simulator"]["max_episode_steps"]),
-    )
+    evaluator = rollout_evaluator(bundle, config, suite, suite_tasks)
     output = Path(args.output_root) / suite / f"seed_{seed}" / condition
     if output.exists():
         raise FileExistsError(f"refusing to overwrite recovery results: {output}")
@@ -245,12 +214,7 @@ def main() -> int:
         )
 
         def evaluate(adapter_state):
-            policy = OctoLiberoPolicy(
-                bundle,
-                adapter_state,
-                action_mean=stream.normalization.mean,
-                action_std=stream.normalization.std,
-            )
+            policy = OctoLiberoPolicy(bundle, adapter_state)
             return evaluator.evaluate_task(
                 policy,
                 task_index=task_index,
@@ -284,7 +248,6 @@ def main() -> int:
                 batch_size=batch_size,
                 seed=seed * 10_000 + task_index,
                 text_processor=bundle.pretrained_model.text_processor,
-                example_batch=bundle.pretrained_model.example_batch,
             )
 
             def checkpoint_sink(update_steps, adapter_state, task_loss):

@@ -85,16 +85,30 @@ def initial_adapter_state(bundle: Any) -> dict[str, Any]:
     }
 
 
-def materialize_policy_params(bundle: Any, adapter_state: Mapping[str, Any]) -> Any:
+def materialize_policy_params(
+    bundle: Any, adapter_state: Mapping[str, Any], *, base_params: Any | None = None
+) -> Any:
+    """Functional policy parameters: frozen base plus one adapter state.
+
+    ``base_params`` lets a compiled function receive the frozen base as an
+    argument. Closing over ``bundle.research_model.params`` inside ``jax.jit``
+    would instead bake ~0.5 GB of weights into every compiled program as
+    constants, which exhausts host memory on small machines.
+    """
+
+    from .bridge import activate_research_bundle
+
+    # Every graph that applies an adapter state is traced through here, so this
+    # is where the bundle makes sure Octo instantiates *its* patched transformer.
+    activate_research_bundle(bundle)
     low_rank_keys = {"transformer", "diffusion"}
     generated_keys = low_rank_keys | {"decoded_transformer", "decoded_diffusion"}
     if set(adapter_state) not in (low_rank_keys, generated_keys):
         raise ValueError(
             "adapter_state must be low-rank-only or include both decoded update groups"
         )
-    params = apply_internal_adapter_params(
-        bundle.research_model.params, adapter_state["transformer"]
-    )
+    base = bundle.research_model.params if base_params is None else base_params
+    params = apply_internal_adapter_params(base, adapter_state["transformer"])
     params = apply_external_adapters(
         params, adapter_state["diffusion"], alpha=bundle.adapter_alpha
     )
@@ -127,10 +141,11 @@ def octo_diffusion_loss(
     rng: Any,
     *,
     train: bool,
+    base_params: Any | None = None,
 ):
     """Official Octo loss with gradients restricted to adapter state."""
 
-    params = materialize_policy_params(bundle, adapter_state)
+    params = materialize_policy_params(bundle, adapter_state, base_params=base_params)
     bound = bundle.research_model.module.bind(
         {"params": params}, rngs={"dropout": rng}
     )
@@ -159,3 +174,177 @@ def adapter_value_and_grad(bundle: Any, adapter_state: Mapping[str, Any], batch,
         ),
         has_aux=True,
     )(adapter_state)
+
+
+def _leaf_branch(encoded_path: str) -> tuple[str, str] | None:
+    """Map an adapter leaf path to ``(branch, factor)``.
+
+    Branches are ``<component>/block_<layer>`` for transformer residuals and
+    ``action/head/<kernel path>`` for diffusion-head kernels.
+    """
+
+    from .bridge import ADAPTER_LEAF
+
+    for part in encoded_path.split("/"):
+        match = ADAPTER_LEAF.fullmatch(part)
+        if match:
+            return f"{match.group(1)}/block_{int(match.group(2)):02d}", match.group(3)
+    return None
+
+
+def branch_norms(tree: Mapping[str, Any]) -> dict[str, dict[str, float]]:
+    """L2 norm of every adapter branch's ``down`` and ``up`` leaves.
+
+    ``tree`` has the low-rank adapter-state structure (state, gradient, or
+    update): ``{"transformer": {path: array}, "diffusion": {path: {down, up}}}``.
+    """
+
+    import numpy as np
+
+    norms: dict[str, dict[str, float]] = {}
+    for encoded, value in tree["transformer"].items():
+        located = _leaf_branch(encoded)
+        if located is None:
+            raise ValueError(f"not an adapter leaf: {encoded}")
+        branch, factor = located
+        norms.setdefault(branch, {})[factor] = float(np.linalg.norm(np.asarray(value)))
+    for encoded, pair in tree["diffusion"].items():
+        norms[f"action/head/{encoded}"] = {
+            "down": float(np.linalg.norm(np.asarray(pair["down"]))),
+            "up": float(np.linalg.norm(np.asarray(pair["up"]))),
+        }
+    return norms
+
+
+def component_norms(tree: Mapping[str, Any]) -> dict[str, float]:
+    """Root-sum-square norm per component, splitting action into its two sites."""
+
+    import numpy as np
+
+    totals = {"vision": 0.0, "language": 0.0, "action_readout": 0.0, "action_head": 0.0}
+    for branch, factors in branch_norms(tree).items():
+        component = branch.split("/", 1)[0]
+        key = (
+            "action_head"
+            if branch.startswith("action/head/")
+            else ("action_readout" if component == "action" else component)
+        )
+        totals[key] += sum(value**2 for value in factors.values())
+    return {name: float(np.sqrt(value)) for name, value in totals.items()}
+
+
+def assert_adapter_gradient_reachability(
+    bundle: Any,
+    batch: Mapping[str, Any],
+    rng: Any,
+    *,
+    probe_step: float = 1e-2,
+    minimum_norm: float = 1e-12,
+    extra_draws: int = 4,
+) -> dict[str, Any]:
+    """Gate: the task loss must be able to train every adapter branch.
+
+    With zero-initialized ``up`` factors the correct expectation is asymmetric:
+
+    * every ``up`` factor must receive a non-zero gradient immediately;
+    * every ``down`` gradient is exactly zero at initialization (it is
+      multiplied by the zero ``up`` factor) and must become non-zero once the
+      ``up`` factors have moved.
+
+    A branch that fails either condition can never leave its initial value.
+
+    The diffusion loss is random: Octo draws timesteps and noise from ``rng``,
+    and one draw can give a reachable branch an exactly zero gradient. The
+    head's time embedding gets none when every drawn timestep is 0, which some
+    keys produce on a small batch (seen with JAX 0.7's random streams). A
+    branch that looks dead is therefore checked again with up to
+    ``extra_draws`` keys folded from ``rng``; it fails the gate only if no
+    draw reaches it. ``redrawn`` in the report names any branch that needed
+    another draw.
+    """
+
+    _, _, _, jax = _imports()
+    keys = [rng, *(jax.random.fold_in(rng, draw) for draw in range(1, extra_draws + 1))]
+
+    def gradients_of(adapter_state, draw):
+        (_, _), gradients = adapter_value_and_grad(bundle, adapter_state, batch, keys[draw])
+        gradients = jax.device_get(gradients)
+        norms = branch_norms(gradients)
+        non_finite = [name for name, value in norms.items() if not all(map(_finite, value.values()))]
+        if non_finite:
+            raise AssertionError(f"non-finite adapter gradients: {non_finite}")
+        return norms, gradients
+
+    def reach(adapter_state, factor):
+        """Gradient norms per branch; branches at zero are redrawn."""
+
+        norms, gradients = gradients_of(adapter_state, 0)
+        trees = {0: gradients}
+        source = dict.fromkeys(norms, 0)
+        for draw in range(1, len(keys)):
+            dead = [name for name, value in norms.items() if value[factor] <= minimum_norm]
+            if not dead:
+                break
+            other, trees[draw] = gradients_of(adapter_state, draw)
+            for name in dead:
+                if other[name][factor] > minimum_norm:
+                    norms[name], source[name] = other[name], draw
+        dead = sorted(name for name, value in norms.items() if value[factor] <= minimum_norm)
+        return norms, source, trees, dead
+
+    state = initial_adapter_state(bundle)
+    initial, initial_source, trees, dead_up = reach(state, "up")
+    if dead_up:
+        raise AssertionError(
+            "the task loss cannot reach these zero-initialized adapter branches "
+            f"(zero up-factor gradient in {len(keys)} draws): {dead_up}"
+        )
+
+    # Move only the up factors along their gradient (from the draw that
+    # reached each branch), then re-check the down factors.
+    def up_gradient(branch, part, path):
+        return trees[initial_source[branch]][part][path]
+
+    probed = {
+        "transformer": {
+            path: (
+                value - probe_step * up_gradient(_leaf_branch(path)[0], "transformer", path)
+                if path.endswith("_up/kernel")
+                else value
+            )
+            for path, value in state["transformer"].items()
+        },
+        "diffusion": {
+            path: {
+                "down": pair["down"],
+                "up": pair["up"]
+                - probe_step * up_gradient(f"action/head/{path}", "diffusion", path)["up"],
+            }
+            for path, pair in state["diffusion"].items()
+        },
+    }
+    after, after_source, _, dead_down = reach(probed, "down")
+    if dead_down:
+        raise AssertionError(
+            "down factors stay unreachable after the up factors moved "
+            f"(zero gradient in {len(keys)} draws): {dead_down}"
+        )
+    return {
+        "branches": len(initial),
+        "initial_up_gradient_norm": {name: value["up"] for name, value in initial.items()},
+        "initial_down_gradient_norm": {name: value["down"] for name, value in initial.items()},
+        "post_update_down_gradient_norm": {name: value["down"] for name, value in after.items()},
+        "minimum_initial_up_gradient_norm": min(value["up"] for value in initial.values()),
+        "maximum_initial_down_gradient_norm": max(value["down"] for value in initial.values()),
+        "minimum_post_update_down_gradient_norm": min(value["down"] for value in after.values()),
+        "redrawn": {
+            "up": {name: draw for name, draw in sorted(initial_source.items()) if draw},
+            "down": {name: draw for name, draw in sorted(after_source.items()) if draw},
+        },
+    }
+
+
+def _finite(value: float) -> bool:
+    import math
+
+    return math.isfinite(value)

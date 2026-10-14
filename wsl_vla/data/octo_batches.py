@@ -1,177 +1,163 @@
-"""Convert complete LIBERO episodes into official Octo training batches."""
+"""Convert complete LIBERO episodes into official Octo training batches.
+
+All model inputs are built by :mod:`wsl_vla.data.preprocessing`, the same code
+the rollout policy uses. This module only iterates episodes, validates actions
+against the fixed controller convention, and stacks examples.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Iterator, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
+from ..contracts import LIBERO_ACTION_CONVENTION, ActionConvention
+from .actions import (  # noqa: F401  (re-exported for existing callers)
+    ActionNormalization,
+    controller_action_normalization,
+    validate_controller_actions,
+)
 from .libero import LiberoEpisode
+from .preprocessing import (
+    PreprocessingSpec,
+    action_window,
+    camera_frames,
+    observation_window,
+    resize_rgb,
+    task_batch,
+)
 
 
-@dataclass(frozen=True)
-class ActionNormalization:
-    mean: np.ndarray
-    std: np.ndarray
-    count: int
-
-    def to_dict(self) -> dict:
-        return {
-            "mean": self.mean.tolist(),
-            "std": self.std.tolist(),
-            "count": int(self.count),
-        }
-
-    @classmethod
-    def fit(cls, episodes: Iterable[LiberoEpisode], epsilon: float = 1e-6):
-        arrays = [np.asarray(episode.actions, dtype=np.float64) for episode in episodes]
-        if not arrays:
-            raise ValueError("cannot fit action normalization without training episodes")
-        values = np.concatenate(arrays, axis=0)
-        std = values.std(axis=0)
-        # A dimension that never changes (e.g. a gripper that never toggles in a
-        # push task) normalizes to zero and denormalizes back to its constant.
-        std = np.where(std <= epsilon, 1.0, std)
-        return cls(values.mean(axis=0).astype(np.float32), std.astype(np.float32), len(values))
-
-    def normalize(self, actions: np.ndarray) -> np.ndarray:
-        values = (np.asarray(actions, dtype=np.float32) - self.mean) / self.std
-        if not np.isfinite(values).all():
-            raise ValueError("normalized actions contain non-finite values")
-        return values
-
-    def denormalize(self, actions: np.ndarray) -> np.ndarray:
-        return np.asarray(actions, dtype=np.float32) * self.std + self.mean
+# Kept for callers that only need the resize primitive.
+_resize_rgb = resize_rgb
 
 
-def _resize_rgb(images: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    values = np.asarray(images)
-    if values.ndim != 4 or values.shape[-1] != 3:
-        raise ValueError("camera observations must have shape [time,height,width,3]")
-    if values.shape[1:3] == size:
-        return values.astype(np.uint8, copy=False)
-    try:
-        from PIL import Image
-    except ImportError as exc:  # pragma: no cover - installed by official Octo
-        raise RuntimeError("Pillow is required to resize LIBERO observations") from exc
-    resized = [
-        np.asarray(Image.fromarray(frame.astype(np.uint8)).resize(size[::-1], Image.Resampling.BILINEAR))
-        for frame in values
-    ]
-    return np.stack(resized).astype(np.uint8)
+def octo_example(
+    episode: LiberoEpisode,
+    timestep: int,
+    *,
+    language_instruction: str,
+    spec: PreprocessingSpec,
+    example_observation: Mapping[str, Any],
+) -> dict:
+    """One training example: history window ending at ``timestep`` plus targets.
+
+    Only the frames inside the window are preprocessed, so random access across
+    episodes costs no more than sequential iteration. The caller is responsible
+    for having validated ``episode.actions`` against the controller convention.
+    """
+
+    length = len(episode.actions)
+    if not 0 <= timestep < length:
+        raise IndexError(f"timestep {timestep} lies outside {episode.episode_id}")
+    start = max(0, timestep - spec.window_size + 1)
+    frames = {}
+    for camera in spec.cameras:
+        if camera.dataset_key not in episode.observations:
+            raise ValueError(f"{episode.episode_id} lacks camera {camera.dataset_key}")
+        raw = episode.observations[camera.dataset_key]
+        if len(raw) != length:
+            raise ValueError(f"camera/action length mismatch in {episode.episode_id}")
+        frames[camera.octo_key] = camera_frames(
+            raw[start : timestep + 1], camera, spec, source="dataset"
+        )
+    action, action_mask = action_window(episode.actions, timestep, spec)
+    return {
+        "observation": observation_window(frames, spec, example_observation),
+        "task": {"language_instruction": language_instruction},
+        "action": action,
+        "action_pad_mask": action_mask,
+        "episode_id": episode.episode_id,
+        "timestep": int(timestep),
+    }
 
 
 def iter_octo_examples(
     episodes: Iterable[LiberoEpisode],
     *,
     language_instruction: str,
-    normalization: ActionNormalization,
-    window_size: int,
-    action_horizon: int,
-    image_size: tuple[int, int] = (256, 256),
-    include_wrist: bool = True,
-    proprio_keys: tuple[str, ...] = (
-        "robot0_eef_pos",
-        "robot0_eef_quat",
-        "robot0_gripper_qpos",
-    ),
+    spec: PreprocessingSpec,
+    example_observation: Mapping[str, Any],
+    convention: ActionConvention = LIBERO_ACTION_CONVENTION,
+    timesteps: Sequence[int] | None = None,
 ) -> Iterator[dict]:
-    """Yield left-padded observation windows and right-padded action chunks."""
+    """Yield left-padded observation windows and right-padded action chunks.
 
-    if window_size <= 0 or action_horizon <= 0 or not language_instruction.strip():
-        raise ValueError("window/action horizons must be positive and language non-empty")
+    Targets stay in controller coordinates. Each episode's commands are checked
+    against the controller bounds first; nothing is clipped or rescaled.
+    ``timesteps`` restricts the yielded steps (every episode must contain them).
+    """
+
+    if not language_instruction.strip():
+        raise ValueError("language instruction cannot be empty")
+    if spec.action_dim != convention.action_dim:
+        raise ValueError("checkpoint action dimension differs from the controller convention")
     for episode in episodes:
-        primary = _resize_rgb(episode.observations["agentview_rgb"], image_size)
-        wrist = None
-        if include_wrist:
-            if "eye_in_hand_rgb" not in episode.observations:
-                raise ValueError(f"{episode.episode_id} has no wrist camera")
-            wrist = _resize_rgb(episode.observations["eye_in_hand_rgb"], image_size)
-        missing_proprio = set(proprio_keys) - set(episode.observations)
-        if missing_proprio:
-            raise ValueError(
-                f"{episode.episode_id} lacks proprioception keys {sorted(missing_proprio)}"
-            )
-        proprio = np.concatenate(
-            [np.asarray(episode.observations[key], dtype=np.float32) for key in proprio_keys],
-            axis=-1,
+        validate_controller_actions(
+            episode.actions, convention, source=f"episode {episode.episode_id}"
         )
-        actions = normalization.normalize(episode.actions)
-        if len(primary) != len(actions) or (wrist is not None and len(wrist) != len(actions)):
-            raise ValueError(f"camera/action length mismatch in {episode.episode_id}")
-        for timestep in range(len(actions)):
-            observation = {
-                "image_primary": np.zeros((window_size, *image_size, 3), dtype=np.uint8),
-                "timestep_pad_mask": np.zeros(window_size, dtype=bool),
-                "proprio": np.zeros((window_size, proprio.shape[-1]), dtype=np.float32),
-            }
-            if wrist is not None:
-                observation["image_wrist"] = np.zeros(
-                    (window_size, *image_size, 3), dtype=np.uint8
-                )
-            start = max(0, timestep - window_size + 1)
-            observed_count = timestep - start + 1
-            destination = slice(window_size - observed_count, window_size)
-            observation["image_primary"][destination] = primary[start : timestep + 1]
-            observation["timestep_pad_mask"][destination] = True
-            observation["proprio"][destination] = proprio[start : timestep + 1]
-            if wrist is not None:
-                observation["image_wrist"][destination] = wrist[start : timestep + 1]
-
-            action = np.zeros(
-                (window_size, action_horizon, actions.shape[-1]), dtype=np.float32
+        selected = range(len(episode.actions)) if timesteps is None else timesteps
+        for timestep in selected:
+            yield octo_example(
+                episode,
+                int(timestep),
+                language_instruction=language_instruction,
+                spec=spec,
+                example_observation=example_observation,
             )
-            action_mask = np.zeros_like(action, dtype=bool)
-            for window_offset, source_timestep in enumerate(range(start, timestep + 1), window_size - observed_count):
-                end = min(len(actions), source_timestep + action_horizon)
-                count = end - source_timestep
-                action[window_offset, :count] = actions[source_timestep:end]
-                action_mask[window_offset, :count] = True
-            yield {
-                "observation": observation,
-                "task": {"language_instruction": language_instruction.encode("utf-8")},
-                "action": action,
-                "action_pad_mask": action_mask,
-                "episode_id": episode.episode_id,
-                "timestep": timestep,
-            }
 
 
-def collate_octo_examples(examples: Sequence[Mapping], text_processor=None) -> dict:
-    """Stack examples and apply Octo's official language tokenizer."""
+def _stack(values: Sequence[Any]) -> Any:
+    if isinstance(values[0], Mapping):
+        return {key: _stack([value[key] for value in values]) for key in values[0]}
+    return np.stack([np.asarray(value) for value in values])
+
+
+def collate_octo_examples(
+    examples: Sequence[Mapping], *, text_processor: Any, example_task: Mapping[str, Any]
+) -> dict:
+    """Stack examples and build the language task with Octo's own tokenizer."""
 
     if not examples:
         raise ValueError("cannot collate an empty batch")
-    batch = {
-        "observation": {
-            key: np.stack([item["observation"][key] for item in examples])
-            for key in examples[0]["observation"]
-        },
-        "task": {
-            "language_instruction": np.asarray(
-                [item["task"]["language_instruction"] for item in examples]
-            )
-        },
+    return {
+        "observation": _stack([item["observation"] for item in examples]),
+        "task": task_batch(
+            [item["task"]["language_instruction"] for item in examples],
+            text_processor,
+            example_task,
+        ),
         "action": np.stack([item["action"] for item in examples]),
         "action_pad_mask": np.stack([item["action_pad_mask"] for item in examples]),
     }
-    if text_processor is not None:
-        try:
-            from octo.utils.train_utils import process_text
-        except ImportError as exc:  # pragma: no cover - research environment only
-            raise RuntimeError("official Octo is required for language tokenization") from exc
-        batch = process_text(batch, text_processor)
-    return batch
+
+
+def _assert_tree_matches(value: Any, expected: Any, path: str) -> None:
+    if isinstance(expected, Mapping):
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{path} must be a mapping like the checkpoint example")
+        if set(value) != set(expected):
+            raise ValueError(
+                f"{path} keys differ from the checkpoint: "
+                f"missing={sorted(set(expected)-set(value))}, extra={sorted(set(value)-set(expected))}"
+            )
+        for key in expected:
+            _assert_tree_matches(value[key], expected[key], f"{path}/{key}")
+        return
+    actual_shape = np.asarray(value).shape
+    expected_shape = np.asarray(expected).shape
+    if actual_shape[1:] != expected_shape[1:]:
+        raise ValueError(
+            f"{path} shape {actual_shape[1:]} differs from checkpoint {expected_shape[1:]}"
+        )
 
 
 def conform_batch_to_octo_example(batch: Mapping, example_batch: Mapping) -> dict:
-    """Select and shape-check exactly the inputs supported by a checkpoint.
+    """Fail closed unless a batch has exactly the checkpoint's inputs.
 
-    LIBERO loaders may expose useful extra observations such as proprioception.
-    Official Octo checkpoints differ in which tokenizers they enable, so extras
-    are dropped only after they have been loaded and validated from the dataset.
-    Missing checkpoint-required inputs fail closed.
+    The shared preprocessing already builds checkpoint-exact inputs, so this is
+    a structural check rather than a repair step: no key is added, dropped, or
+    resized here.
     """
 
     required_top = {"observation", "task", "action", "action_pad_mask"}
@@ -179,80 +165,23 @@ def conform_batch_to_octo_example(batch: Mapping, example_batch: Mapping) -> dic
         raise ValueError(f"batch lacks Octo fields: {sorted(required_top-set(batch))}")
     if not {"observation", "task", "action"} <= set(example_batch):
         raise ValueError("official Octo example batch is incomplete")
-
-    obs_batch = dict(batch["observation"])
-    if "timestep_pad_mask" in obs_batch:
-        pad_mask = np.asarray(obs_batch["timestep_pad_mask"])
-        B, T = pad_mask.shape
-        if "timestep" not in obs_batch and "timestep" in example_batch.get("observation", {}):
-            obs_batch["timestep"] = np.tile(np.arange(T, dtype=np.int32), (B, 1))
-        if "task_completed" not in obs_batch and "task_completed" in example_batch.get("observation", {}):
-            target_shape = np.asarray(example_batch["observation"]["task_completed"]).shape[2:]
-            obs_batch["task_completed"] = np.zeros((B, T, *target_shape), dtype=bool)
-        if "pad_mask_dict" not in obs_batch and "pad_mask_dict" in example_batch.get("observation", {}):
-            example_pm = example_batch["observation"]["pad_mask_dict"]
-            obs_batch["pad_mask_dict"] = {k: pad_mask for k in example_pm}
-
-    conformed_batch = dict(batch)
-    conformed_batch["observation"] = obs_batch
-
-    task_batch = dict(batch["task"])
-    if "language_instruction" in task_batch:
-        lang_val = task_batch["language_instruction"]
-        B = (
-            len(lang_val)
-            if isinstance(lang_val, (list, tuple))
-            else next(iter(lang_val.values())).shape[0]
-            if isinstance(lang_val, dict)
-            else np.asarray(lang_val).shape[0]
-        )
-        for k, v in example_batch.get("task", {}).items():
-            if k not in task_batch and k not in ("pad_mask_dict", "language_instruction"):
-                v_arr = np.asarray(v)
-                task_batch[k] = np.zeros((B, *v_arr.shape[1:]), dtype=v_arr.dtype)
-        if "pad_mask_dict" not in task_batch and "pad_mask_dict" in example_batch.get("task", {}):
-            example_pm = example_batch["task"]["pad_mask_dict"]
-            task_batch["pad_mask_dict"] = {
-                k: np.ones(B, dtype=bool) if k == "language_instruction" else np.zeros(B, dtype=bool)
-                for k in example_pm
-            }
-    conformed_batch["task"] = task_batch
-
-    result = {}
-    for family in ("observation", "task"):
-        expected = example_batch[family]
-        missing = set(expected) - set(conformed_batch[family])
-        if missing:
-            raise ValueError(f"batch lacks checkpoint-required {family} keys: {sorted(missing)}")
-        result[family] = {}
-        for key in expected:
-            value = conformed_batch[family][key]
-            if key == "pad_mask_dict" and isinstance(value, dict):
-                result[family][key] = {
-                    k: np.asarray(value[k]) for k in expected[key]
-                }
-                continue
-            if key == "language_instruction" and isinstance(value, dict) and isinstance(expected[key], dict):
-                result[family][key] = {
-                    sub_k: np.asarray(value[sub_k]) for sub_k in expected[key]
-                }
-                continue
-            if key == "image_wrist" and hasattr(value, "shape"):
-                expected_shape = np.asarray(expected[key]).shape
-                if value.shape[-3:-1] != expected_shape[-3:-1]:
-                    target_hw = (expected_shape[-3], expected_shape[-2])
-                    flat = value.reshape(-1, *value.shape[-3:])
-                    value = _resize_rgb(flat, target_hw).reshape(*value.shape[:-3], *target_hw, value.shape[-1])
-            actual_shape = np.asarray(value).shape
-            expected_shape = np.asarray(expected[key]).shape
-            if actual_shape[1:] != expected_shape[1:]:
-                raise ValueError(
-                    f"{family}/{key} shape {actual_shape[1:]} differs from checkpoint {expected_shape[1:]}"
-                )
-            result[family][key] = value
-    for name in ("action", "action_pad_mask"):
-        value = np.asarray(batch[name])
-        if name == "action" and value.shape[1:] != np.asarray(example_batch["action"]).shape[1:]:
-            raise ValueError("action shape differs from official Octo checkpoint")
-        result[name] = value
-    return result
+    _assert_tree_matches(batch["observation"], example_batch["observation"], "observation")
+    _assert_tree_matches(batch["task"], example_batch["task"], "task")
+    action = np.asarray(batch["action"])
+    if action.shape[1:] != np.asarray(example_batch["action"]).shape[1:]:
+        raise ValueError("action shape differs from official Octo checkpoint")
+    mask = np.asarray(batch["action_pad_mask"])
+    if mask.shape != action.shape or mask.dtype != bool:
+        raise ValueError("action_pad_mask must be a boolean array shaped like action")
+    sizes = {
+        action.shape[0],
+        np.asarray(batch["observation"]["timestep_pad_mask"]).shape[0],
+    }
+    if len(sizes) != 1:
+        raise ValueError("observation and action batch sizes differ")
+    return {
+        "observation": batch["observation"],
+        "task": batch["task"],
+        "action": action,
+        "action_pad_mask": mask,
+    }

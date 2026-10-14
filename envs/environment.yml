@@ -1,25 +1,12 @@
-name: vla_zoo
+# Conda definition of the `legacy-smoke` profile (PyTorch smoke-test pipeline).
+# The Octo-Small research experiments do NOT use this environment; create one of
+# the locked research profiles instead:
+#   envs/scripts/setup_research.sh --profile <blackwell|legacy-gpu> <venv-directory>
+name: vla_legacy_smoke
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
-  - defaults
 dependencies:
   - python=3.10
   - pip
   - pip:
-      - torch>=2.2.0
-      - torchvision>=0.17.0
-      - transformers>=4.40.0
-      - peft>=0.10.0
-      - accelerate>=0.28.0
-      - h5py>=3.10.0
-      - pyyaml>=6.0.1
-      - wandb>=0.16.0
-      - tqdm>=4.66.0
-      - einops>=0.7.0
-      - sentence-transformers>=2.6.0
-      - mujoco>=3.1.0
-      - gymnasium>=0.29.0
-      - PyOpenGL>=3.1.7
-      - PyOpenGL_accelerate>=3.1.7
+      - -r requirements/legacy-smoke.txt

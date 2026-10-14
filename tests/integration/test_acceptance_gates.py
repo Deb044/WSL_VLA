@@ -35,7 +35,7 @@ def summary(successes: int, checkpoint: str = "a" * 64) -> TaskRolloutSummary:
     )
 
 
-def test_one_task_gate_requires_improvement_and_determinism():
+def test_one_task_gate_passes_on_integrity_and_records_improvement_as_a_finding():
     baseline = summary(1)
     adapted = summary(2, "b" * 64)
     result = one_task_learning_gate(
@@ -44,15 +44,17 @@ def test_one_task_gate_requires_improvement_and_determinism():
         adapted_first=adapted,
         adapted_repeat=adapted,
     )
-    assert result.passed
+    assert result.passed and result.integrity_passed and result.improved
+    # An adapter that trains correctly but does not beat the frozen base is a
+    # recorded (negative) result, not an infrastructure failure.
     no_improvement = one_task_learning_gate(
         baseline_first=baseline,
         baseline_repeat=baseline,
         adapted_first=baseline,
         adapted_repeat=baseline,
-        enforce=False,
     )
-    assert not no_improvement.passed
+    assert no_improvement.passed and no_improvement.integrity_passed
+    assert not no_improvement.improved
 
 
 def test_one_task_gate_detects_nondeterministic_episode_outcome():

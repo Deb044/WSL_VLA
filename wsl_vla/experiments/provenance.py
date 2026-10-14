@@ -19,6 +19,31 @@ import numpy as np
 from ..contracts import RunManifest
 
 
+def atomic_write_bytes(path: str | Path, payload: bytes) -> None:
+    """Write a file so that readers see the old content or the new, never a part."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # mkstemp creates 0600 files; artifacts are handed to collaborators.
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(temporary, 0o666 & ~umask)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def atomic_write_json(path: str | Path, payload: Mapping[str, Any]) -> None:
+    atomic_write_bytes(path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode())
+
+
 def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -132,6 +157,18 @@ def _editable_checkout_commit(distribution_name: str, url: str) -> str:
     return commit
 
 
+def _legacy_editable_checkout(distribution: Any) -> Path | None:
+    """Source checkout of a legacy editable install, or ``None`` if it is not one."""
+
+    metadata = getattr(distribution, "_path", None)
+    if metadata is None:
+        return None
+    metadata = Path(str(metadata))
+    if metadata.suffix != ".egg-info" or not (metadata.parent / ".git").exists():
+        return None
+    return metadata.parent.resolve()
+
+
 def installed_vcs_commit(distribution_name: str) -> str:
     """Read the immutable commit recorded by a PEP 610 VCS installation."""
 
@@ -141,9 +178,19 @@ def installed_vcs_commit(distribution_name: str) -> str:
         raise RuntimeError(f"required distribution is not installed: {distribution_name}") from exc
     direct_url = distribution.read_text("direct_url.json")
     if not direct_url:
-        raise RuntimeError(
-            f"{distribution_name} was not installed from a provenance-bearing VCS URL"
-        )
+        # A legacy editable install ("setup.py develop", which pip still uses for
+        # projects without a pyproject.toml such as LIBERO) keeps its metadata in
+        # an .egg-info inside the source checkout and has no direct_url.json.
+        # The checkout itself is then the evidence: read its clean HEAD.
+        checkout = _legacy_editable_checkout(distribution)
+        if checkout is None:
+            raise RuntimeError(
+                f"{distribution_name} was not installed from a provenance-bearing VCS URL"
+            )
+        commit = _editable_checkout_commit(distribution_name, checkout.as_uri())
+        if len(commit) != 40:
+            raise RuntimeError(f"{distribution_name} has no full 40-character VCS commit")
+        return commit
     try:
         payload = json.loads(direct_url)
         if "vcs_info" in payload:

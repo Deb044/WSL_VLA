@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from wsl_vla.contracts import AdapterEntry, AdapterSpec, Component
+from wsl_vla.contracts import LIBERO_ACTION_CONVENTION, AdapterEntry, AdapterSpec, Component
 from wsl_vla.evaluation.components import (
     SWAP_CONDITIONS,
     component_drift,
@@ -20,8 +20,15 @@ def _spec():
         token_width=2,
         entries=tuple(
             AdapterEntry(component, index, component.value, 1, 2, 1)
-            for index, component in enumerate(Component)
+            for index, component in sorted(enumerate(Component), key=lambda item: item[1].value)
         ),
+        architecture_sha256="b" * 64,
+        token_routing=(
+            ("obs_primary", "vision"),
+            ("readout_action", "action"),
+            ("task_language", "language"),
+        ),
+        action_convention=LIBERO_ACTION_CONVENTION,
     )
 
 

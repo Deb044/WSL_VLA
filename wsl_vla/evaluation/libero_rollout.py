@@ -16,7 +16,9 @@ from typing import Any, Mapping, Protocol, Sequence
 
 import numpy as np
 
-from ..data.octo_batches import _resize_rgb
+from ..contracts import LIBERO_ACTION_CONVENTION, ActionConvention
+from ..data.actions import ClippingMonitor
+from ..data.preprocessing import PreprocessingSpec, camera_frames, observation_window, task_batch
 from ..experiments.provenance import sha256_array_tree
 
 
@@ -74,6 +76,9 @@ class EpisodeRollout:
     steps: int
     success: bool
     episode_return: float
+    clipped_steps: int = 0
+    clipped_step_fraction: float | None = None
+    max_clip_excess: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,19 @@ class TaskRolloutSummary:
     @property
     def initialization_indices(self) -> tuple[int, ...]:
         return tuple(episode.initialization_index for episode in self.episodes)
+
+    @property
+    def clipping(self) -> dict[str, Any]:
+        """Controller-bound clipping frequency over every executed step."""
+
+        steps = sum(episode.steps for episode in self.episodes)
+        clipped = sum(episode.clipped_steps for episode in self.episodes)
+        return {
+            "steps": steps,
+            "clipped_steps": clipped,
+            "clipped_step_fraction": clipped / steps if steps else None,
+            "max_excess": max((episode.max_clip_excess for episode in self.episodes), default=0.0),
+        }
 
     def as_outcome(self):
         """Convert to the strict shared-state runner contract without a cycle."""
@@ -140,27 +158,36 @@ def validate_benchmark_task_order(
 
 
 class LiberoRolloutEvaluator:
-    """Evaluate one policy state in one official LIBERO suite, one env at a time."""
+    """Evaluate policy states in one official LIBERO suite, one env at a time.
+
+    Cameras render at the demonstration storage resolution named by the shared
+    preprocessing; the policy applies the same orientation and resize steps that
+    produced its training inputs. Every policy action is clipped to the
+    controller bounds here, and the clipping frequency is recorded per episode.
+    """
 
     def __init__(
         self,
         *,
         suite: str,
         expected_instructions: Sequence[str],
-        camera_size: tuple[int, int] = (256, 256),
+        preprocessing: PreprocessingSpec,
+        convention: ActionConvention = LIBERO_ACTION_CONVENTION,
         warmup_steps: int = 5,
         max_steps: int = 600,
         benchmark_suite: Any | None = None,
         env_factory: Any | None = None,
         bddl_root: str | Path | None = None,
+        simulator_image_convention: str | None = None,
     ) -> None:
         if suite not in {"libero_spatial", "libero_object", "libero_goal", "libero_10"}:
             raise ValueError(f"unsupported reference suite: {suite}")
-        if min(camera_size) <= 0 or warmup_steps < 0 or max_steps <= 0:
-            raise ValueError("invalid LIBERO rollout dimensions or horizons")
+        if warmup_steps < 0 or max_steps <= 0:
+            raise ValueError("invalid LIBERO rollout horizons")
         if benchmark_suite is None or env_factory is None or bddl_root is None:
             try:
                 with robosuite_import_environment():
+                    import robosuite.macros as macros
                     from libero.libero import benchmark, get_libero_path
                     from libero.libero.envs import OffScreenRenderEnv
             except ImportError as exc:  # pragma: no cover - WSL research environment
@@ -170,9 +197,20 @@ class LiberoRolloutEvaluator:
             benchmark_suite = benchmark.get_benchmark_dict()[suite]()
             env_factory = OffScreenRenderEnv
             bddl_root = get_libero_path("bddl_files")
+            simulator_image_convention = str(macros.IMAGE_CONVENTION)
+        if simulator_image_convention is None:
+            raise ValueError(
+                "an injected simulator must declare its image convention so rollout "
+                "frames can be checked against demonstration generation"
+            )
+        # Rollout cameras must be oriented exactly like the demonstrations.
+        preprocessing.assert_simulator_convention(simulator_image_convention)
         self.suite = suite
         self.expected_instructions = tuple(expected_instructions)
-        self.camera_size = tuple(int(value) for value in camera_size)
+        self.preprocessing = preprocessing
+        self.convention = convention
+        self.camera_size = (int(preprocessing.source_height), int(preprocessing.source_width))
+        self.simulator_image_convention = simulator_image_convention
         self.warmup_steps = int(warmup_steps)
         self.max_steps = int(max_steps)
         self.benchmark_suite = benchmark_suite
@@ -188,10 +226,31 @@ class LiberoRolloutEvaluator:
         rollout_count: int,
         seed: int,
     ) -> TaskRolloutSummary:
+        return self.evaluate_policies(
+            {"policy": policy}, task_index=task_index, rollout_count=rollout_count, seed=seed
+        )["policy"]
+
+    def evaluate_policies(
+        self,
+        policies: Mapping[str, RolloutPolicy],
+        *,
+        task_index: int,
+        rollout_count: int,
+        seed: int,
+    ) -> dict[str, TaskRolloutSummary]:
+        """Paired evaluation: every policy sees the same init states and seeds.
+
+        The initialization indices and episode seeds depend only on ``seed``,
+        the task, and the rollout ordinal - never on the policy - so outcomes
+        of different conditions are paired episode by episode.
+        """
+
+        if not policies:
+            raise ValueError("at least one policy is required")
         if not 0 <= task_index < len(self.expected_instructions):
             raise IndexError(f"task_index {task_index} is outside the reference suite")
-        checkpoint_sha256 = str(policy.checkpoint_sha256)
-        if len(checkpoint_sha256) != 64:
+        identities = {name: str(policy.checkpoint_sha256) for name, policy in policies.items()}
+        if any(len(value) != 64 for value in identities.values()):
             raise ValueError("policy checkpoint identity must be a SHA-256 digest")
         task = self.benchmark_suite.get_task(task_index)
         instruction = self.expected_instructions[task_index]
@@ -206,146 +265,118 @@ class LiberoRolloutEvaluator:
             camera_heights=self.camera_size[0],
             camera_widths=self.camera_size[1],
         )
-        episodes: list[EpisodeRollout] = []
-        zero_action = np.zeros(7, dtype=np.float32)
+        episodes: dict[str, list[EpisodeRollout]] = {name: [] for name in policies}
+        zero_action = np.zeros(self.convention.action_dim, dtype=np.float32)
         try:
             for ordinal, initialization_index in enumerate(indices):
                 episode_seed = int(seed * 100_000 + task_index * 1_000 + ordinal)
-                env.seed(episode_seed)
-                env.reset()
-                observation = env.set_init_state(init_states[initialization_index])
-                for _ in range(self.warmup_steps):
-                    observation, _, done, _ = env.step(zero_action)
-                    if done:
-                        raise RuntimeError("LIBERO episode terminated during physics warmup")
-                policy.reset(instruction=instruction, seed=episode_seed)
-                episode_return = 0.0
-                success = False
-                steps = 0
-                for steps in range(1, self.max_steps + 1):
-                    action = np.asarray(policy.action(observation), dtype=np.float32)
-                    if action.shape != (7,) or not np.isfinite(action).all():
-                        raise ValueError(
-                            f"policy must produce one finite 7-D LIBERO action, got {action.shape}"
+                for name, policy in policies.items():
+                    env.seed(episode_seed)
+                    env.reset()
+                    observation = env.set_init_state(init_states[initialization_index])
+                    for _ in range(self.warmup_steps):
+                        observation, _, done, _ = env.step(zero_action)
+                        if done:
+                            raise RuntimeError("LIBERO episode terminated during physics warmup")
+                    policy.reset(instruction=instruction, seed=episode_seed)
+                    monitor = ClippingMonitor(self.convention)
+                    episode_return = 0.0
+                    success = False
+                    steps = 0
+                    for steps in range(1, self.max_steps + 1):
+                        action = monitor.clip(policy.action(observation))
+                        observation, reward, done, info = env.step(action)
+                        episode_return += float(reward)
+                        success = bool(
+                            float(reward) > 0
+                            or done
+                            or (isinstance(info, Mapping) and info.get("success", False))
                         )
-                    observation, reward, done, info = env.step(action)
-                    episode_return += float(reward)
-                    success = bool(
-                        float(reward) > 0
-                        or done
-                        or (isinstance(info, Mapping) and info.get("success", False))
+                        if success:
+                            break
+                    clipping = monitor.report()
+                    episodes[name].append(
+                        EpisodeRollout(
+                            task_id=f"{self.suite}_{task_index}",
+                            task_index=task_index,
+                            instruction=instruction,
+                            initialization_index=initialization_index,
+                            episode_seed=episode_seed,
+                            steps=steps,
+                            success=success,
+                            episode_return=episode_return,
+                            clipped_steps=clipping["clipped_steps"],
+                            clipped_step_fraction=clipping["clipped_step_fraction"],
+                            max_clip_excess=clipping["max_excess"],
+                        )
                     )
-                    if success:
-                        break
-                episodes.append(
-                    EpisodeRollout(
-                        task_id=f"{self.suite}_{task_index}",
-                        task_index=task_index,
-                        instruction=instruction,
-                        initialization_index=initialization_index,
-                        episode_seed=episode_seed,
-                        steps=steps,
-                        success=success,
-                        episode_return=episode_return,
-                    )
-                )
         finally:
             env.close()
-        return TaskRolloutSummary(
-            suite=self.suite,
-            task_id=f"{self.suite}_{task_index}",
-            task_index=task_index,
-            policy_checkpoint_sha256=checkpoint_sha256,
-            episodes=tuple(episodes),
-        )
+        return {
+            name: TaskRolloutSummary(
+                suite=self.suite,
+                task_id=f"{self.suite}_{task_index}",
+                task_index=task_index,
+                policy_checkpoint_sha256=identities[name],
+                episodes=tuple(episodes[name]),
+            )
+            for name in policies
+        }
 
 
 def build_octo_observation(
     history: Sequence[Mapping[str, Any]],
+    spec: PreprocessingSpec,
     example_observation: Mapping[str, Any],
-    *,
-    proprio_keys: Sequence[str] = (
-        "robot0_eef_pos",
-        "robot0_eef_quat",
-        "robot0_gripper_qpos",
-    ),
-) -> dict[str, np.ndarray]:
-    """Convert raw LIBERO observations to one left-padded Octo batch."""
+) -> dict[str, Any]:
+    """Convert raw LIBERO simulator observations to one left-padded Octo batch.
+
+    This is :func:`wsl_vla.data.preprocessing.observation_window` applied to
+    simulator frames; training batches call the same function on demonstration
+    frames, so the two paths cannot drift apart.
+    """
 
     if not history:
         raise ValueError("observation history cannot be empty")
-    if "timestep_pad_mask" not in example_observation:
-        raise ValueError("Octo checkpoint has no timestep_pad_mask")
-    window = int(np.asarray(example_observation["timestep_pad_mask"]).shape[1])
-    selected = history[-window:]
-    start = window - len(selected)
-    result: dict[str, np.ndarray] = {}
-    raw_image_keys = {
-        "image_primary": "agentview_image",
-        "image_wrist": "robot0_eye_in_hand_image",
-    }
-    pad_mask = np.zeros((1, window), dtype=bool)
-    pad_mask[0, start:] = True
-    for key, expected_value in example_observation.items():
-        # Filled exactly as conform_batch_to_octo_example fills training batches.
-        if key == "pad_mask_dict":
-            result[key] = {name: pad_mask.copy() for name in expected_value}
-            continue
-        expected = np.asarray(expected_value)
-        if key == "timestep_pad_mask":
-            result[key] = pad_mask.copy()
-            continue
-        if key == "timestep":
-            result[key] = np.arange(window, dtype=expected.dtype)[None]
-            continue
-        if key == "task_completed":
-            result[key] = np.zeros((1, window, *expected.shape[2:]), dtype=bool)
-            continue
-        if key in raw_image_keys:
-            raw_key = raw_image_keys[key]
-            missing = [index for index, item in enumerate(selected) if raw_key not in item]
-            if missing:
-                raise ValueError(f"LIBERO observations lack {raw_key} at history entries {missing}")
-            image_size = (int(expected.shape[-3]), int(expected.shape[-2]))
-            resized = _resize_rgb(
-                np.stack([np.asarray(item[raw_key]) for item in selected]), image_size
+    selected = history[-spec.window_size :]
+    frames = {}
+    for camera in spec.cameras:
+        missing = [
+            index for index, item in enumerate(selected) if camera.simulator_key not in item
+        ]
+        if missing:
+            raise ValueError(
+                f"LIBERO observations lack {camera.simulator_key} at history entries {missing}"
             )
-            value = np.zeros((1, window, *expected.shape[2:]), dtype=expected.dtype)
-            value[0, start:] = resized.astype(expected.dtype, copy=False)
-            result[key] = value
-            continue
-        if key == "proprio":
-            rows = []
-            for item in selected:
-                missing = set(proprio_keys) - set(item)
-                if missing:
-                    raise ValueError(f"LIBERO observation lacks proprio keys {sorted(missing)}")
-                rows.append(
-                    np.concatenate([np.asarray(item[name]).reshape(-1) for name in proprio_keys])
-                )
-            stacked = np.stack(rows).astype(expected.dtype, copy=False)
-            if stacked.shape[1:] != expected.shape[2:]:
-                raise ValueError(
-                    f"LIBERO proprio shape {stacked.shape[1:]} differs from Octo {expected.shape[2:]}"
-                )
-            value = np.zeros((1, window, *expected.shape[2:]), dtype=expected.dtype)
-            value[0, start:] = stacked
-            result[key] = value
-            continue
-        raise ValueError(f"unsupported checkpoint observation key for LIBERO: {key}")
-    return result
+        frames[camera.octo_key] = camera_frames(
+            np.stack([np.asarray(item[camera.simulator_key]) for item in selected]),
+            camera,
+            spec,
+            source="simulator",
+        )
+    window = observation_window(frames, spec, example_observation)
+    return _add_batch_axis(window)
+
+
+def _add_batch_axis(tree: Any) -> Any:
+    if isinstance(tree, Mapping):
+        return {key: _add_batch_axis(value) for key, value in tree.items()}
+    return np.asarray(tree)[None]
 
 
 class OctoLiberoPolicy:
-    """Official Octo sampling wrapper for one immutable adapter state."""
+    """Official Octo sampling wrapper for one immutable adapter state.
+
+    Actions are sampled directly in controller coordinates (identity
+    normalization). The sampling key is derived only from the episode seed, so
+    two policies evaluated on the same episode consume identical noise.
+    """
 
     def __init__(
         self,
         bundle: Any,
         adapter_state: Mapping[str, Any],
         *,
-        action_mean: np.ndarray,
-        action_std: np.ndarray,
         argmax: bool = False,
         temperature: float = 1.0,
     ) -> None:
@@ -353,22 +384,23 @@ class OctoLiberoPolicy:
             import jax
         except ImportError as exc:  # pragma: no cover - WSL research environment
             raise RuntimeError("official Octo rollout requires JAX") from exc
+        from ..octo.bridge import unnormalization_statistics
         from ..octo.training import materialize_policy_params
 
-        mean = np.asarray(action_mean, dtype=np.float32)
-        std = np.asarray(action_std, dtype=np.float32)
-        if mean.shape != (7,) or std.shape != (7,) or np.any(std <= 0):
-            raise ValueError("LIBERO action statistics must be positive 7-D mean/std arrays")
         params = materialize_policy_params(bundle, adapter_state)
         self.model = bundle.research_model.replace(params=params)
+        self._bundle = bundle
+        self.preprocessing = bundle.preprocessing
+        self.convention = bundle.action_convention
         # Records and stage sidecars identify the small reloadable adapter, not
         # a second hash of the repeatedly materialized frozen base parameters.
-        self.checkpoint_sha256 = sha256_array_tree(adapter_state)
-        self.unnormalization_statistics = {"mean": mean, "std": std}
+        self.checkpoint_sha256 = sha256_array_tree(jax.device_get(adapter_state))
+        self.unnormalization_statistics = unnormalization_statistics(self.convention)
         self.argmax = bool(argmax)
         self.temperature = float(temperature)
         self._jax = jax
         self._history: list[Mapping[str, Any]] = []
+        self._pending: list[np.ndarray] = []
         self._tasks = None
         self._rng = None
 
@@ -376,17 +408,27 @@ class OctoLiberoPolicy:
         if not instruction.strip():
             raise ValueError("LIBERO instruction cannot be empty")
         self._history = []
-        self._tasks = self.model.create_tasks(texts=[instruction])
+        self._pending = []
+        self._tasks = task_batch(
+            [instruction], self.model.text_processor, self.model.example_batch["task"]
+        )
         self._rng = self._jax.random.PRNGKey(seed)
 
     def action(self, observation: Mapping[str, Any]) -> np.ndarray:
+        from ..octo.bridge import activate_research_bundle
+
         if self._tasks is None or self._rng is None:
             raise RuntimeError("reset must be called before Octo action sampling")
-        self._history.append(observation)
+        keys = [camera.simulator_key for camera in self.preprocessing.cameras]
+        self._history.append({key: observation[key] for key in keys if key in observation})
+        del self._history[: -self.preprocessing.window_size]
+        if self._pending:
+            return self._pending.pop(0)
         inputs = build_octo_observation(
-            self._history, self.model.example_batch["observation"]
+            self._history, self.preprocessing, self.model.example_batch["observation"]
         )
         self._rng, sample_rng = self._jax.random.split(self._rng)
+        activate_research_bundle(self._bundle)
         actions = self.model.sample_actions(
             inputs,
             self._tasks,
@@ -396,6 +438,9 @@ class OctoLiberoPolicy:
             temperature=self.temperature,
         )
         values = np.asarray(self._jax.device_get(actions))
-        if values.ndim != 3 or values.shape[0] != 1 or values.shape[-1] < 7:
+        dim = self.convention.action_dim
+        if values.ndim != 3 or values.shape[0] != 1 or values.shape[-1] < dim:
             raise ValueError(f"Octo returned invalid action tensor {values.shape}")
-        return values[0, 0, :7].astype(np.float32, copy=False)
+        plan = values[0, : self.preprocessing.executed_actions_per_plan, :dim].astype(np.float32)
+        self._pending = [row.copy() for row in plan[1:]]
+        return plan[0].copy()

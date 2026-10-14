@@ -14,7 +14,6 @@ import sys
 import tempfile
 import uuid
 
-import numpy as np
 
 def _find_repo_root() -> Path:
     for p in Path(__file__).resolve().parents:
@@ -26,11 +25,12 @@ REPO_ROOT = _find_repo_root()
 sys.path.insert(0, str(REPO_ROOT))
 
 from wsl_vla.contracts import RunManifest
-from wsl_vla.data.libero import StrictLiberoHDF5, load_suite_manifest
-from wsl_vla.data.octo_batches import ActionNormalization
-from wsl_vla.data.streams import TaskTrainingStream, make_octo_batch_factory
+from wsl_vla.data.libero import load_suite_manifest
+from wsl_vla.data.streams import make_octo_batch_factory
 from wsl_vla.evaluation.gates import one_task_learning_gate
-from wsl_vla.evaluation.libero_rollout import LiberoRolloutEvaluator, OctoLiberoPolicy
+from wsl_vla.evaluation.libero_rollout import OctoLiberoPolicy
+from wsl_vla.experiments.runtime import rollout_evaluator, task_streams_from_config
+from wsl_vla.octo.compat import require_environment_profile
 from wsl_vla.experiments.protocol import (
     LIBERO_GIT_REVISION,
     REQUIRED_SUITES,
@@ -48,9 +48,8 @@ from wsl_vla.experiments.provenance import (
     write_manifest_atomic,
 )
 from wsl_vla.octo.bridge import (
-    OCTO_GIT_REVISION,
     assert_zero_adapter_equivalence,
-    load_research_octo,
+    load_research_octo_from_config,
 )
 from wsl_vla.octo.continual import train_shared_lora_stage
 from wsl_vla.octo.training import initial_adapter_state
@@ -84,27 +83,9 @@ def summary_payload(summary) -> dict:
 
 
 def build_task_stream(*, task_id, instruction, data_file, config, bundle):
-    dataset = StrictLiberoHDF5(
-        data_file,
-        require_wrist_camera=bool(config["data"]["require_wrist_camera"]),
-        required_proprio_keys=tuple(config["data"]["proprio_keys"]),
-    )
-    split = dataset.split(seed=int(config["data"]["split_seed"]))
-    episodes = tuple(dataset.iter_episodes(split.train))
-    normalization = ActionNormalization.fit(episodes)
-    example = bundle.pretrained_model.example_batch
-    observation = example["observation"]
-    primary = np.asarray(observation["image_primary"])
-    stream = TaskTrainingStream(
-        task_id=task_id,
-        instruction=instruction,
-        episodes=episodes,
-        normalization=normalization,
-        window_size=int(np.asarray(observation["timestep_pad_mask"]).shape[1]),
-        action_horizon=int(np.asarray(example["action"]).shape[-2]),
-        image_size=(int(primary.shape[-3]), int(primary.shape[-2])),
-    )
-    return stream
+    return task_streams_from_config(
+        bundle, task_id=task_id, instruction=instruction, data_file=data_file, config=config
+    )["train"]
 
 
 def parse_args():
@@ -145,7 +126,7 @@ def main() -> int:
     validate_reference_tasks(tasks)
     if args.seed not in config["evaluation"]["training_seeds"]:
         raise ValueError("seed is outside the locked evaluation protocol")
-    assert_installed_vcs_revision("octo", OCTO_GIT_REVISION)
+    require_environment_profile()
     assert_installed_vcs_revision("libero", LIBERO_GIT_REVISION)
 
     suite_tasks = tuple(tasks["suites"][args.suite])
@@ -170,12 +151,7 @@ def main() -> int:
     manifest_path = run_root / "manifest.json"
 
     try:
-        bundle = load_research_octo(
-            args.checkpoint,
-            rank=int(config["adapter"]["rank"]),
-            alpha=float(config["adapter"]["alpha"]),
-            seed=args.seed,
-        )
+        bundle = load_research_octo_from_config(config, args.checkpoint, seed=args.seed)
         assert_zero_adapter_equivalence(bundle)
         stream = build_task_stream(
             task_id=task_id,
@@ -218,24 +194,10 @@ def main() -> int:
             environment=capture_environment(("jax", "flax", "optax", "octo", "libero")),
         )
         write_manifest_atomic(manifest, manifest_path)
-        evaluator = LiberoRolloutEvaluator(
-            suite=args.suite,
-            expected_instructions=suite_tasks,
-            camera_size=(
-                int(config["simulator"]["camera_height"]),
-                int(config["simulator"]["camera_width"]),
-            ),
-            warmup_steps=int(config["simulator"]["warmup_steps"]),
-            max_steps=int(config["simulator"]["max_episode_steps"]),
-        )
+        evaluator = rollout_evaluator(bundle, config, args.suite, suite_tasks)
 
         def evaluate(adapter_state):
-            policy = OctoLiberoPolicy(
-                bundle,
-                adapter_state,
-                action_mean=stream.normalization.mean,
-                action_std=stream.normalization.std,
-            )
+            policy = OctoLiberoPolicy(bundle, adapter_state)
             return evaluator.evaluate_task(
                 policy,
                 task_index=args.task_index,
@@ -251,7 +213,6 @@ def main() -> int:
             batch_size=batch_size,
             seed=args.seed,
             text_processor=bundle.pretrained_model.text_processor,
-            example_batch=bundle.pretrained_model.example_batch,
         )
         trained = train_shared_lora_stage(
             bundle,
@@ -283,7 +244,8 @@ def main() -> int:
         payload = {
             "schema_version": 1,
             "run_id": run_id,
-            "passed": result.passed,
+            "integrity_passed": result.integrity_passed,
+            "improved_over_frozen_base": result.improved,
             "decision": asdict(result),
             "training": {
                 "final_task_loss": trained.final_task_loss,
@@ -308,7 +270,9 @@ def main() -> int:
         manifest.finished_at = datetime.now(timezone.utc).isoformat()
         write_manifest_atomic(manifest, manifest_path)
         print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0 if result.passed else 1
+        # Exit status reflects integrity (deterministic, reproducible rollouts).
+        # Whether the adapter beat the frozen base is a recorded finding.
+        return 0 if result.integrity_passed else 1
     except Exception as exc:
         if manifest is not None:
             manifest.failures.append({"type": type(exc).__name__, "message": str(exc)})

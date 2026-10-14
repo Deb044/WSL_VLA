@@ -92,3 +92,55 @@ def test_editable_install_rejects_modified_checkout(monkeypatch, tmp_path):
     )
     with pytest.raises(RuntimeError, match="invalid direct_url|modified tracked files"):
         provenance.installed_vcs_commit("libero")
+
+
+class LegacyEditableDistribution:
+    """A ``setup.py develop`` install: metadata in the checkout, no direct_url.json."""
+
+    def __init__(self, checkout):
+        self._path = checkout / "libero.egg-info"
+        self._path.mkdir()
+
+    def read_text(self, name):
+        assert name == "direct_url.json"
+        return None
+
+
+def test_legacy_editable_install_is_identified_by_its_clean_checkout(monkeypatch, tmp_path):
+    commit = _git_checkout(tmp_path)
+    distribution = LegacyEditableDistribution(tmp_path)
+    monkeypatch.setattr(
+        provenance.importlib.metadata, "distribution", lambda name: distribution
+    )
+
+    assert provenance.assert_installed_vcs_revision("libero", commit) == commit
+    with pytest.raises(RuntimeError, match="revision mismatch"):
+        provenance.assert_installed_vcs_revision("libero", "b" * 40)
+    # Local edits to tracked files make the recorded commit meaningless.
+    (tmp_path / "tracked.py").write_text("x = 3\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="modified tracked files"):
+        provenance.installed_vcs_commit("libero")
+
+
+def test_install_without_any_provenance_is_still_rejected(monkeypatch, tmp_path):
+    class Installed:
+        _path = tmp_path / "site-packages" / "libero-0.1.dist-info"
+
+        def read_text(self, name):
+            return None
+
+    monkeypatch.setattr(provenance.importlib.metadata, "distribution", lambda name: Installed())
+    with pytest.raises(RuntimeError, match="provenance-bearing VCS URL"):
+        provenance.installed_vcs_commit("libero")
+
+    # An .egg-info that does not sit in a git checkout proves nothing either.
+    orphan = tmp_path / "orphan"
+    orphan.mkdir()
+    (orphan / "libero.egg-info").mkdir()
+
+    class Orphan(Installed):
+        _path = orphan / "libero.egg-info"
+
+    monkeypatch.setattr(provenance.importlib.metadata, "distribution", lambda name: Orphan())
+    with pytest.raises(RuntimeError, match="provenance-bearing VCS URL"):
+        provenance.installed_vcs_commit("libero")

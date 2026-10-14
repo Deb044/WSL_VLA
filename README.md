@@ -1,154 +1,141 @@
 # WSL_VLA: Weight-Space Alignment for Continual Robot Learning
 
-The official Methodology 1 implementation is the primary `wsl_vla` package. It
-is organized by responsibility (`octo`, `adapters`, `alignment`, `data`,
-`evaluation`, and `experiments`) rather than living in a parallel research
-sidecar. The former PyTorch policy analogue is quarantined under
-`wsl_vla/smoke/legacy_torch`; it is retained only for fast plumbing checks and
-must not be used for papers, benchmark tables, or claims about pretrained VLAs.
+Research code for building a zoo of Octo-Small adapters on LIBERO, aligning
+their weights with task evidence in a shared latent space, and evaluating
+reconstructed and evidence-generated policies in simulation.
+
+The pipeline was repaired in October 2026 (see `../PLAN.md`). The zoo must be
+regenerated: adapters produced before the repair used a placement in which the
+final-layer vision and language branches could not learn, and they are kept
+only as legacy diagnostics.
 
 ```text
 wsl_vla/
-├── octo/          # official pinned Octo loading and adapter-only training
-├── adapters/      # adapter schema, packing, and decoded weight injection
-├── alignment/     # evidence encoders, WeightCLIP losses, mapping, and shells
-├── data/          # strict real-LIBERO loading and Octo batch construction
-├── evaluation/    # simulator rollouts, continual metrics, swaps, and records
-├── experiments/   # locked protocols, splits, sampling, and provenance
-└── smoke/         # explicitly non-publishable legacy PyTorch fixtures
+├── octo/          # pinned Octo loading, pre-block modality adapters, zoo trainer
+├── adapters/      # adapter schema, token packing, rank-matched deployment
+├── alignment/     # evidence, archives, windowed autoencoder, mapping, diagnostics
+├── data/          # LIBERO loading, shared preprocessing, controller actions
+├── evaluation/    # paired rollouts, generated policies, clustered statistics
+├── experiments/   # experiment manifests, job plans, provenance
+└── smoke/         # legacy PyTorch fixtures, never used for results
 ```
+
+## Status in one paragraph
+
+The infrastructure runs end to end on the real checkpoint, real LIBERO
+demonstrations, and the real simulator at the smallest (integrity) scale, on a
+6 GB laptop GPU with the `legacy-gpu` environment. The pilot and full
+experiments have not been run, the `blackwell` environment has not run on
+Blackwell hardware (its exact package versions pass the unit suite on CPU),
+and nothing here shows that alignment helps.
+`docs/methodology/IMPLEMENTATION_STATUS.md` has the details.
 
 ## Scientific scope
 
-The local study tests three hypotheses:
+The study asks three questions:
 
-- task evidence can organize modality-factorized adapter updates in an aligned
+- can task evidence organize modality-factorized adapter updates in an aligned
   weight latent space;
-- mapped latents improve held-out task initialization and matched-step adaptation;
-- stronger visual/language than action regularization improves retention in a
-  genuinely shared sequential policy state.
+- do mapped latents improve held-out task initialization and matched-step
+  adaptation;
+- does stronger visual/language than action regularization improve retention
+  in a shared sequential policy state.
 
-Large-VLA generalization is a later confirmation phase and is not implied by the
-Octo-Small results.
+Each has an honest negative answer available. No gate requires a method to
+win; results are recorded as supporting, inconclusive, or negative.
+Large-VLA generalization is a later phase and is not implied by Octo-Small
+results.
 
-## Research environment
+## Environments
 
-The official path targets Linux, Python 3.11, and an NVIDIA GPU with CUDA
-12.8+ support, including Blackwell (sm_120). It uses JAX 0.7.1 and Flax 0.12.
-Upstream Octo `241fb3514b7c40957a86d869fecb7c7fc353f540` does not run on that
-JAX, so `third_party/octo/*.patch` ports it. `scripts/setup/build_patched_octo.sh`
-rebuilds the patch as the deterministic commit
-`a4cc964b7e77f8d8b19f533a0dfa95d653501ab7`. The model configuration pins
-`rail-berkeley/octo-small-1.5` and records the resolved checkpoint hash in every
-run. LIBERO is pinned to commit
-`8f1084e3132a39270c3a13ebe37270a43ece2a01`. Preflight verifies both revisions
-from their installed package metadata, and checks that JAX sees a GPU.
+| Profile | Stack | Status |
+| --- | --- | --- |
+| `blackwell` | Python 3.11, JAX 0.7.1 (`jax[cuda12]`), Flax 0.12, patched Octo | unit suite passes with these versions on CPU; not run on Blackwell hardware |
+| `legacy-gpu` | Python 3.10, JAX 0.4.20 (CUDA 11 wheels), Flax 0.7.5, upstream Octo | verified on an RTX 4050 |
+| `legacy-smoke` | PyTorch smoke scripts | not a research environment |
 
 ```bash
-PYTHON=python3.11 envs/scripts/setup_linux.sh .venv-research
-source .venv-research/bin/activate
+envs/scripts/setup_research.sh --profile <blackwell|legacy-gpu> <venv-directory>
+source <venv-directory>/bin/activate
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-python scripts/eval/research_preflight.py
-python scripts/eval/verify_official_octo.py
-pytest -m "not integration"
 ```
 
-The preflight fails when real data, pinned dependencies, task counts, episode
-structure, CUDA safeguards, or checkpoint provenance are missing. Use
-`--host-inspection-only` only to inspect an incompatible development host.
-It also saves a complete installed-package lock and hashes the configuration,
-task order, gamma search space, requirements, and datasets. Every official
-runner creates its own manifest before training and records the code revision,
-dirty state, hardware, environment, base hash, seeds, and task order.
+The job runner adds XLA's deterministic GPU ops per stage (zoo training is then
+bit-reproducible; alignment training runs without them, see the runbook).
 
-## Publication protocol
+The pinned inputs are `rail-berkeley/octo-small-1.5` at revision
+`dc9aa3019f764726c770814b27e4ab0fc6e32a58`, Octo source
+`241fb3514b7c40957a86d869fecb7c7fc353f540` (plus `third_party/octo` on
+Blackwell), and LIBERO `8f1084e3132a39270c3a13ebe37270a43ece2a01`.
 
-- Exact ten-task orders are in `configs/reference_tasks.yaml`.
-- `configs/research/base.yaml` locks three seeds, three late checkpoints per
-  task, baselines, rollout counts, and output locations.
-- Four leave-one-suite-out folds train alignment/mapping on the other three
-  suites; task indices 8 and 9 within those suites are reserved for calibration.
-- The expected model zoo contains `40 × 3 × 3 = 360` adapter checkpoints, all
-  tied to one immutable base hash.
-- Standard research outputs live under ignored `research_results/` and contain
-  manifests, checkpoints, JSONL rollout records, and generated tables/figures.
+## Running
 
-Start with `docs/methodology/METHODOLOGY1_RUNBOOK.md` for the exact execution order. See
-`docs/methodology/IMPLEMENTATION_STATUS.md` for implemented versus not-yet-executed work,
-and `docs/methodology/RESEARCH_PIPELINE.md` for detailed data contracts. Once the four data
-manifests exist, `scripts/reporting/plan_methodology1_jobs.py` emits the complete locked
-dependency graph for collaborator or cluster execution. The final
-`scripts/reporting/audit_methodology1_study.py` command fails unless the artifact tree is
-publication-complete and provenance-consistent.
-
-## Implemented research utilities
-
-- Official Octo transformer patch with zero-initialized visual, language, and
-  action-readout adapters after every transformer block, plus differentiable
-  low-rank updates to the official diffusion action head.
-- Basis-invariant packing of effective low-rank updates into masked WeightCLIP
-  windows.
-- Strict HDF5 episode validation and leakage-free splits.
-- Shared masked weight autoencoder, trainable evidence encoders, multi-positive
-  InfoNCE, empirical shells, differentiable latent refinement, and a linear
-  ridge prompt-to-latent mapper.
-- Exact SR, NBT, normalized NBT, forgetting, forward-transfer, recovery, and
-  bootstrap correlation utilities.
-- Deterministic official-LIBERO rollout plumbing with fixed initialization
-  identities and official Octo action sampling.
-- Immutable rollout record and run-manifest schemas.
-
-## Alignment archive and training
-
-Each population sample directory contains `adapter.npz`, `evidence.npz`, and
-`metadata.json`. Produce real evidence and one three-checkpoint population run
-with:
+Everything is driven by an experiment manifest and a resumable job runner:
 
 ```bash
-python scripts/data/extract_research_evidence.py \
-  --data-file data/libero/libero_spatial/task_0.hdf5 \
-  --suite libero_spatial --task-index 0 \
-  --output research_results/evidence/libero_spatial/libero_spatial_0.npz
-
-python scripts/train/train_research_zoo.py \
-  --suite libero_spatial --task-index 0 --seed 17 \
-  --evidence research_results/evidence/libero_spatial/libero_spatial_0.npz
+pytest -m "not integration" -q
+python scripts/setup/download_libero.py --manifest configs/research/manifests/integrity.yaml
+python scripts/reporting/plan_zoo_alignment_jobs.py --manifest configs/research/manifests/integrity.yaml
+python scripts/train/run_job_manifest.py research_results/experiments/integrity/jobs/jobs.jsonl --offline
 ```
 
-The evidence command uses only locked training episodes and records action
-normalization, episode IDs, dataset/base hashes, and the preprocessing hash.
-The zoo trainer updates only official Octo adapter state and saves the three
-configured late checkpoints. After completing the 40-task × three-seed
-population, assemble and train each fold with:
+Several runners may execute one job manifest at once, sharing its state
+directory. On the cluster submit one per GPU slice, e.g.
+`RENDER=mesa-egl jobs/submit_workers.sh small 4 jobs/03_model_zoo.sh`; the
+runbook explains the choice of slices.
+
+Manifests ship for three profiles:
+
+| Manifest | Tasks x seeds x snapshots | Purpose |
+| --- | --- | --- |
+| `integrity.yaml` | 2 x 1 x 3 = 6 samples | proves the pipeline executes; not evidence |
+| `pilot.yaml` | 12 x 2 x 3 = 72 samples | engineering pilot and budget validation; not evidence |
+| `full.yaml` | 40 x 3 x 3 = 360 samples | four leave-one-suite-out folds, three alignment seeds |
+
+`docs/methodology/METHODOLOGY1_RUNBOOK.md` gives the full ordered procedure,
+expected artifacts, measured resource use, and how to read results.
+`docs/methodology/RESEARCH_PIPELINE.md` documents the model and data contracts.
+
+## Tests
 
 ```bash
-python scripts/data/build_alignment_archive.py research_results/population \
-  --output research_results/alignment/fold.npz \
-  --held-out-suite libero_spatial
-
-python scripts/train/train_research_alignment.py research_results/alignment/fold.npz \
-  --output research_results/checkpoints/alignment/fold
+pytest -m "not integration" -q                                   # unit and contract tests
+pytest tests/integration/test_real_pipeline.py -m integration    # real Octo + LIBERO, ~40 min on a laptop GPU
 ```
 
-No test-suite samples are accepted in an alignment archive. Multiple checkpoints
-from the same task share a positive label in contrastive training.
-The resulting alignment directory is independently reloadable: it contains the
-token layout, evidence encoders, auxiliary classifiers, ridge mappers, and
-empirical shells needed for mapped JAX refinement through official Octo loss.
+The second command drives the actual command-line pipeline on a reduced
+integrity manifest: it trains, snapshots, reloads, reconstructs, maps, and
+rolls out policies in the simulator. It needs a GPU, the cached checkpoint, the
+integrity demonstrations, and the simulator. Missing prerequisites are named
+and the test is skipped; set `WSL_VLA_REQUIRE_INTEGRATION=1` to make that a
+failure. A skipped test is not a passed test, and the session summary says so.
 
-## Reporting
+Tests that need Octo run on a toy model assembled from Octo's own classes
+(`tests/octo_tiny.py`), so adapter placement, routing, gradients, equivalence,
+snapshots, and exact resume are checked without the 547 MB checkpoint.
 
-Rollout evaluators append one `EvaluationRecord` per matrix cell. Metrics are
-computed only from the immutable records:
+## What changed in the repair
 
-```bash
-python scripts/reporting/report_research_metrics.py research_results/records/run.jsonl \
-  --suite libero_spatial --seed 42 --condition proposed_asymmetric
-```
+- Adapters act on the **input** of every transformer block and are routed by an
+  explicit token table; unknown token groups are rejected.
+- One fixed controller-action convention with identity normalization; targets
+  are validated, deployment clipping is measured.
+- One preprocessing path for training, evidence, and rollouts, with measured
+  camera orientation.
+- Zoo training with explicit update counts, exact resume, held-out losses,
+  per-component norms, an open-loop sampling check, and paired rollouts.
+- Per-episode action-chunk evidence, training-only standardization, manifest-
+  driven counts and folds, hash re-checks, memory-mapped archives.
+- A windowed transformer autoencoder with per-entry RMS scaling, a
+  bidirectional multi-positive contrastive loss, and a control that differs
+  only in that loss.
+- Task-balanced ridge mappers, training-only shells, rank-matched deployment.
+- Evaluation that separates integrity failures from inconclusive and negative
+  findings, with task-balanced metrics and clustered uncertainty.
 
-Offline action MSE is diagnostic only. Publication claims require rollout-based
-success matrices, three seeds, confidence intervals, complete provenance, and
-the locked ablation set.
+## Legacy artifacts
 
-Use `scripts/reporting/report_publication_study.py` for the final report; it requires all
-four suites, three seeds, eight conditions, and every lower-triangular cell.
+`research_results/{population,evidence,alignment,preflight}` hold version-one
+artifacts. Corrected commands reject them; inspect them with
+`python scripts/reporting/inspect_legacy_artifacts.py research_results`.
+Corrected experiments write only under `research_results/experiments/<name>/`.

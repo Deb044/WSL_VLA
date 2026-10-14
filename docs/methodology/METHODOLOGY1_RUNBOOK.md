@@ -183,8 +183,13 @@ zero-adapter equivalence), `sbatch jobs/01_render_check.sh` (which `RENDER`
 works; expect `mesa-egl`), then the integrity profile with one runner:
 
 ```bash
-sbatch --export=ALL,RENDER=mesa-egl,MANIFEST=configs/research/manifests/integrity.yaml,STAGES=gates,evidence,zoo,zoo_behaviour,zoo_verification,archive,alignment,diagnostics_validation,rollouts_validation,report jobs/03_model_zoo.sh
+STAGES=gates,evidence,zoo,zoo_behaviour,zoo_verification,archive,alignment,diagnostics_validation,rollouts_validation,report \
+  sbatch --export=ALL,RENDER=mesa-egl,MANIFEST=configs/research/manifests/integrity.yaml jobs/03_model_zoo.sh
 ```
+
+`STAGES` goes in the environment rather than in `--export`, because sbatch
+splits `--export` at commas and would keep only `gates`. The job log's second
+line prints the stages it received.
 
 ### Offline operation
 

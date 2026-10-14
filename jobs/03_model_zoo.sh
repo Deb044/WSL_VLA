@@ -19,7 +19,8 @@
 #   RENDER=mesa-egl jobs/submit_workers.sh small 4 jobs/03_model_zoo.sh   # four 1g.24gb runners
 #   sbatch --export=ALL,RENDER=mesa-egl jobs/03_model_zoo.sh              # one runner
 #   sbatch --export=ALL,RENDER=mesa-egl,MANIFEST=configs/research/manifests/full.yaml jobs/03_model_zoo.sh
-#   sbatch --export=ALL,STAGES=gates,evidence,zoo jobs/03_model_zoo.sh     # no simulator
+#   STAGES=gates,evidence,zoo sbatch jobs/03_model_zoo.sh                  # no simulator
+# Set STAGES in the environment, not in --export: sbatch splits --export at commas.
 #SBATCH --job-name=m1_model_zoo
 #SBATCH --account=research
 #SBATCH --partition=gpu_small

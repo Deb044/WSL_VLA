@@ -113,7 +113,7 @@ def build_experiment_job_plan(
     add(
         "gate:preflight",
         "gates",
-        [python, "scripts/eval/research_preflight.py", *common, "--output-dir", gates / "preflight"],
+        [python, "scripts/eval/research_preflight.py", *common, "--output-dir", gates / "preflight", *data],
         outputs=[gates / "preflight" / "preflight.json"],
         gpu=False,
     )

@@ -16,7 +16,8 @@
 # Submit from the repository root, e.g.
 #   RENDER=mesa-egl jobs/submit_workers.sh small 4 jobs/04_alignment.sh
 #   sbatch --export=ALL,RENDER=mesa-egl jobs/04_alignment.sh
-#   sbatch --export=ALL,STAGES=archive,alignment,diagnostics_validation jobs/04_alignment.sh
+#   STAGES=archive,alignment,diagnostics_validation sbatch jobs/04_alignment.sh
+# Set STAGES in the environment, not in --export: sbatch splits --export at commas.
 #SBATCH --job-name=m1_alignment
 #SBATCH --account=research
 #SBATCH --partition=gpu_small

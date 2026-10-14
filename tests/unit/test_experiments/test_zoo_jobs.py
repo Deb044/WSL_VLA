@@ -84,6 +84,25 @@ def test_held_out_jobs_exist_only_for_a_frozen_budget(tmp_path):
     assert rollouts["command"][-4:] == ["--scope", "held_out", "--tier", "final"]
 
 
+def test_every_script_that_reads_demonstrations_gets_the_data_root(tmp_path):
+    # Without --data-root a script falls back to the relative configured root,
+    # which does not exist on the cluster (data lives on scratch).
+    repository = Path(__file__).resolve().parents[3]
+    jobs = build_experiment_job_plan(
+        synthetic_manifest(frozen=True), manifest_path="manifest.yaml", research_root=tmp_path,
+        python="python", data_root="/scratch/data/libero",
+    )
+    checked = set()
+    for job in jobs:
+        command, script = job["command"], job["command"][1]
+        if not script.endswith(".py") or "--data-root" not in (repository / script).read_text():
+            continue
+        checked.add(job["job_id"])
+        assert "--data-root" in command, job["job_id"]
+        assert command[command.index("--data-root") + 1] == "/scratch/data/libero", job["job_id"]
+    assert "gate:preflight" in checked and any(i.startswith("zoo:") for i in checked)
+
+
 def test_plan_round_trips_through_jsonl(tmp_path):
     _, jobs = plan(tmp_path)
     path = tmp_path / "jobs.jsonl"

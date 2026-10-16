@@ -48,7 +48,7 @@ from wsl_vla.data.preprocessing import (
     LIBERO_CAMERA_SOURCES,
     apply_image_transform,
 )
-from wsl_vla.evaluation.libero_rollout import robosuite_import_environment
+from wsl_vla.evaluation.libero_rollout import benchmark_task_indices, robosuite_import_environment
 from wsl_vla.experiments.manifest import task_id as make_task_id
 from wsl_vla.experiments.protocol import load_yaml, validate_reference_tasks, validate_research_config
 from wsl_vla.experiments.runtime import task_data_file
@@ -135,7 +135,9 @@ def main() -> int:
             measured = {"status": "not_run", "reason": f"LIBERO simulator unavailable: {exc}"}
         else:
             suite = benchmark.get_benchmark_dict()[args.suite]()
-            task = suite.get_task(args.task_index)
+            # The protocol's task order differs from LIBERO's in some suites.
+            benchmark_index = benchmark_task_indices(suite, tasks["suites"][args.suite])[args.task_index]
+            task = suite.get_task(benchmark_index)
             bddl = Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
             env = OffScreenRenderEnv(
                 bddl_file_name=str(bddl), camera_heights=source[0], camera_widths=source[1]
@@ -160,6 +162,8 @@ def main() -> int:
             best = {item["best"] for item in comparisons}
             measured = {
                 "status": "run",
+                "benchmark_task_index": benchmark_index,
+                "benchmark_bddl_file": task.bddl_file,
                 "simulator_image_convention": str(macros.IMAGE_CONVENTION),
                 "configured_simulator_alignment": settings["simulator_alignment"],
                 "comparisons": comparisons,

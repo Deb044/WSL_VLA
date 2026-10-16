@@ -158,15 +158,27 @@ with `gradient_accumulation_steps: 2`, which fits a 24 GB slice beside two
 rollout processes; the effective batch is 16 either way. Larger micro-batches are faster per sample (21 against 17 samples per
 second at 4 against 2 on the laptop).
 
+Measured in the integrity run on one 1g.24gb slice (2026-10-15, 17 of 17 jobs,
+44 minutes): zoo training 21.4 to 21.9 micro-steps per second at micro-batch 2
+(44 samples per second, about 2.5 times the laptop), 17 to 38 s compile,
+2.4 GB GPU memory, 5.8 GB host memory; generated-policy rollouts 0.35 s per
+simulator step including setup (4,800 steps in 1,694 s).
+
 Rough pilot timeline on four small slices, assuming every episode runs to the
-600-step horizon (failed episodes do) at 0.25 s per step: zoo training and
-paired behaviour rollouts about 8 hours, alignment about 4, validation
-rollouts about 25, held-out rollouts about 60. The rollout phases are bound by
+600-step horizon (failed episodes do) at 0.35 s per step: zoo training and
+paired behaviour rollouts about 10 hours, alignment about 2, validation
+rollouts about 35, held-out rollouts about 85. The rollout phases are bound by
 the number of rollout jobs (one per fold and alignment seed, four in the
 pilot), not by the slices; splitting them by task would let all twelve worker
-slots take part. These are estimates from laptop measurements; size the pilot
-from the integrity run on the cluster (`steady_micro_steps_per_second` in
-`run.json`, `wall_time_seconds_last_attempt` in the rollout summary).
+slots take part and cut those two phases about threefold.
+
+Rollout jobs outlast a 24-hour walltime, and resubmitting resumes them only
+from the last *completed task* (all conditions and episodes of a task are
+recorded together). A validation task is at most about 12 hours (10 conditions
+x 20 episodes x 600 steps x 0.35 s), so it always completes. A held-out task at
+the final tier is up to about 29 hours (50 episodes), longer than one 24-hour
+job: request a longer walltime for the held-out stage, or make the rollout
+record finer-grained before running it.
 
 Jobs run with the hub switched off, and compute nodes may have no internet.
 On a login node, first fill the cache the jobs use and fetch the data:

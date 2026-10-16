@@ -141,20 +141,29 @@ class RolloutPolicy(Protocol):
     def action(self, observation: Mapping[str, Any]) -> np.ndarray: ...
 
 
-def validate_benchmark_task_order(
+def benchmark_task_indices(
     benchmark_suite: Any, expected_instructions: Sequence[str]
-) -> None:
-    """Require the installed LIBERO benchmark to match the locked protocol."""
+) -> tuple[int, ...]:
+    """Map each protocol task to the installed LIBERO benchmark's task index.
+
+    The protocol orders a suite's tasks by its own list (configs/reference_tasks.yaml),
+    which differs from LIBERO's order for libero_object and libero_10. Tasks are
+    matched by instruction, and every protocol task must match exactly one
+    benchmark task.
+    """
 
     if len(expected_instructions) != 10:
         raise ValueError("a reference LIBERO suite must contain exactly ten tasks")
-    actual = [str(benchmark_suite.get_task(index).language) for index in range(10)]
-    for index, (observed, expected) in enumerate(zip(actual, expected_instructions)):
-        if canonical_instruction(observed) != canonical_instruction(expected):
+    installed = [canonical_instruction(str(benchmark_suite.get_task(index).language)) for index in range(10)]
+    indices = []
+    for index, expected in enumerate(expected_instructions):
+        matches = [position for position, value in enumerate(installed) if value == canonical_instruction(expected)]
+        if len(matches) != 1:
             raise ValueError(
-                f"LIBERO task order mismatch at index {index}: "
-                f"installed={observed!r}, protocol={expected!r}"
+                f"protocol task {index} ({expected!r}) matches {len(matches)} installed LIBERO tasks"
             )
+        indices.append(matches[0])
+    return tuple(indices)
 
 
 class LiberoRolloutEvaluator:
@@ -216,7 +225,8 @@ class LiberoRolloutEvaluator:
         self.benchmark_suite = benchmark_suite
         self.env_factory = env_factory
         self.bddl_root = Path(bddl_root)
-        validate_benchmark_task_order(benchmark_suite, self.expected_instructions)
+        # Protocol task index -> the installed benchmark's index of the same task.
+        self.benchmark_indices = benchmark_task_indices(benchmark_suite, self.expected_instructions)
 
     def evaluate_task(
         self,
@@ -252,9 +262,10 @@ class LiberoRolloutEvaluator:
         identities = {name: str(policy.checkpoint_sha256) for name, policy in policies.items()}
         if any(len(value) != 64 for value in identities.values()):
             raise ValueError("policy checkpoint identity must be a SHA-256 digest")
-        task = self.benchmark_suite.get_task(task_index)
+        benchmark_index = self.benchmark_indices[task_index]
+        task = self.benchmark_suite.get_task(benchmark_index)
         instruction = self.expected_instructions[task_index]
-        init_states = np.asarray(self.benchmark_suite.get_task_init_states(task_index))
+        init_states = np.asarray(self.benchmark_suite.get_task_init_states(benchmark_index))
         indices = fixed_initialization_indices(len(init_states), rollout_count, seed=seed)
         bddl_file = self.bddl_root / task.problem_folder / task.bddl_file
         if not bddl_file.is_file():

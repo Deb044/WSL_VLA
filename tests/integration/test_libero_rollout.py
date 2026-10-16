@@ -19,7 +19,7 @@ from wsl_vla.evaluation.libero_rollout import (
     LiberoRolloutEvaluator,
     build_octo_observation,
     fixed_initialization_indices,
-    validate_benchmark_task_order,
+    benchmark_task_indices,
 )
 
 
@@ -134,15 +134,41 @@ def test_fixed_initializations_are_unique_deterministic_and_fail_closed():
         fixed_initialization_indices(10, 20, seed=17)
 
 
-def test_task_order_validation_allows_only_presentation_differences():
+def test_protocol_tasks_are_matched_to_benchmark_tasks_by_instruction():
     expected = instructions()
-    validate_benchmark_task_order(
+    assert benchmark_task_indices(
         FakeSuite([value.lower().rstrip(".") for value in expected]), expected
-    )
+    ) == tuple(range(10))
+    # libero_object and libero_10 list their tasks in a different order than LIBERO.
+    order = [5, 8, 7, 0, 1, 3, 4, 6, 9, 2]
+    installed = [None] * 10
+    for protocol, benchmark in enumerate(order):
+        installed[benchmark] = expected[protocol]
+    assert benchmark_task_indices(FakeSuite(installed), expected) == tuple(order)
     changed = list(expected)
     changed[3] = "Do a different task."
-    with pytest.raises(ValueError, match="index 3"):
-        validate_benchmark_task_order(FakeSuite(changed), expected)
+    with pytest.raises(ValueError, match="protocol task 3 .* matches 0"):
+        benchmark_task_indices(FakeSuite(changed), expected)
+    # A duplicated installed task leaves another protocol task without a match.
+    changed[3] = expected[4]
+    with pytest.raises(ValueError, match="protocol task 3 .* matches 0"):
+        benchmark_task_indices(FakeSuite(changed), expected)
+
+
+def test_evaluator_runs_the_benchmark_task_with_the_protocol_instruction(tmp_path):
+    expected = instructions()
+    installed = list(reversed(expected))  # protocol task i is benchmark task 9 - i
+    evaluator = make_evaluator(tmp_path, benchmark_suite=FakeSuite(installed))
+    policy = FakePolicy()
+    result = evaluator.evaluate_task(policy, task_index=2, rollout_count=3, seed=17)
+    env = FakeEnvironment.instances[0]
+    # FakeSuite offsets each task's init states by its benchmark index.
+    starts = FakeSuite(installed).init_states + 7
+    assert [state.tolist() for state in env.states] == [
+        starts[index].tolist() for index in result.initialization_indices
+    ]
+    assert result.task_id == "libero_spatial_2" and {item.instruction for item in result.episodes} == {expected[2]}
+    assert {instruction for instruction, _ in policy.resets} == {expected[2]}
 
 
 # ---------------------------------------------------------------- evaluator
